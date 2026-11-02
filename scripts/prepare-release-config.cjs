@@ -18,11 +18,15 @@ if (cfg.mac) cfg.mac.artifactName = 'ClipCraft-${version}.${ext}';
 // Universal merge rule: the unpacked native binaries (ffmpeg / ffprobe /
 // onnxruntime) are byte-identical in the x64 and arm64 trees — one installed
 // copy serves both — so the merger must be told to take them from the x64
-// tree instead of failing on the undeclared duplicate.
-if (cfg.mac) cfg.mac.x64ArchFiles = [
-  'Contents/Resources/app.asar.unpacked/node_modules/**',
-  '**/app.asar.unpacked/node_modules/**',
-];
+// tree instead of failing on the undeclared duplicate. electron-builder
+// 26.18.0's schema takes this as ONE Minimatch string, not an array — an
+// array fails config validation on every platform (run #2's failure).
+if (cfg.mac) cfg.mac.x64ArchFiles = '**/app.asar.unpacked/node_modules/**';
+// Never publish from the per-platform build jobs: electron-builder 26
+// implicitly publishes when it detects CI, which fails without GH_TOKEN
+// (run #1's ubuntu failure — the .deb built, then publishing died).
+// The workflow's Publish job alone creates the Release.
+cfg.publish = null;
 const out = path.join(root, 'electron-builder.release.json');
 fs.writeFileSync(out, JSON.stringify(cfg, null, 2) + '\n');
 console.log(`wrote ${path.relative(root, out)} (extraResources removed: ${!('extraResources' in cfg)}, version ${pkg.version})`);
