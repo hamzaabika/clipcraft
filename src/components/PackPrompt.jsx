@@ -46,7 +46,7 @@ export default function PackPrompt({ onClose }) {
 
         {manifest === undefined && <p className="pack-status"><Loader2 size={14} className="spin" /> Checking what the pack offers…</p>}
         {manifest === null && (
-          <p className="pack-status warn"><WifiOff size={14} /> The Creator Pack is not available right now. You can install it later from the Assets tab — nothing is lost by skipping.</p>
+          <p className="pack-status warn"><WifiOff size={14} /> The Creator Pack is not available right now — nothing is lost by skipping.</p>
         )}
         {install.error && view !== 'working' && <p className="pack-status warn"><WifiOff size={14} /> {install.error}</p>}
 
