@@ -1,0 +1,5 @@
+# The CI bootstrap parts are base64 text and must reach every runner
+# byte-exact: Windows checkouts otherwise rewrite their line endings
+# (CRLF) and `base64 -d` fails with "invalid input" (proven locally).
+ci-assets/** -text
+ci-assets.sha256 -text

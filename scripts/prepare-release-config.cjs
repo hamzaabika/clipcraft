@@ -15,6 +15,14 @@ delete cfg.extraResources;
 // The .deb keeps electron-builder's Debian-policy default (clipcraft_<version>_amd64.deb).
 if (cfg.win) cfg.win.artifactName = 'ClipCraft-Setup-${version}.${ext}';
 if (cfg.mac) cfg.mac.artifactName = 'ClipCraft-${version}.${ext}';
+// Universal merge rule: the unpacked native binaries (ffmpeg / ffprobe /
+// onnxruntime) are byte-identical in the x64 and arm64 trees — one installed
+// copy serves both — so the merger must be told to take them from the x64
+// tree instead of failing on the undeclared duplicate.
+if (cfg.mac) cfg.mac.x64ArchFiles = [
+  'Contents/Resources/app.asar.unpacked/node_modules/**',
+  '**/app.asar.unpacked/node_modules/**',
+];
 const out = path.join(root, 'electron-builder.release.json');
 fs.writeFileSync(out, JSON.stringify(cfg, null, 2) + '\n');
 console.log(`wrote ${path.relative(root, out)} (extraResources removed: ${!('extraResources' in cfg)}, version ${pkg.version})`);
