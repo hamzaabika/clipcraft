@@ -183,9 +183,9 @@ function setPerfMode(m) {
   return data.perfMode;
 }
 
-// ---- First-run experience: the onboarding tour and the Creator Pack prompt each show
-// exactly once. Their seen-flags live here, alongside the other settings. ----
-const FIRST_RUN_KEYS = ['tourSeen', 'packPromptSeen'];
+// ---- First-run experience: the welcome card shows exactly once. Its seen-flag
+// lives here, alongside the other settings. ----
+const FIRST_RUN_KEYS = ['tourSeen'];
 const getFirstRun = () => {
   const f = read().firstRun || {};
   return Object.fromEntries(FIRST_RUN_KEYS.map((k) => [k, f[k] === true]));
