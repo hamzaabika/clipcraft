@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/logo.png" width="110" alt="ClipCraft logo" />
+  <img src="https://clipcrafts.pages.dev/assets/logo.png" width="110" alt="ClipCraft logo" />
 </p>
 
 <h1 align="center">ClipCraft</h1>
@@ -27,6 +27,7 @@
 </p>
 
 <p align="center">
+  <a href="https://clipcrafts.pages.dev">Website</a> ·
   <a href="https://instagram.com/hamza_abika">Instagram</a> ·
   <a href="https://github.com/hamzaabika/clipcraft/releases/tag/v1.1.0">Release 1.1.0</a>
 </p>
@@ -34,7 +35,7 @@
 <br>
 
 <p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-editor.png" alt="The ClipCraft editor: media bin with project clips on the left, the live player in the centre, project settings on the right, and a multi-track timeline below" width="100%">
+  <img src="https://clipcrafts.pages.dev/assets/editor.png" alt="The ClipCraft editor: media bin with project clips on the left, the live player in the centre, project settings on the right, and a multi-track timeline below" width="100%">
 </p>
 
 <p align="center"><sub><i>The editor.</i> Media bin, live player and a multi-track timeline — effects, captions and overlays stacked over the picture, with project settings one click away. What the player shows is what the export renders.</sub></p>
@@ -64,11 +65,11 @@ ClipCraft is a free, open-source desktop video editor and covers what people act
 
 ## Demo
 
-<p align="center"><b>▶ <a href="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/demo.mp4">Watch the screen recording</a></b> — home, timeline, transitions, effects and live playback, in under a minute.<br>
-<sub>Sample output: <a href="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/caption-sample.mp4">word-by-word caption animation</a>, exported from ClipCraft.</sub></p>
+<p align="center"><b>▶ <a href="https://clipcrafts.pages.dev/assets/demo.mp4">Watch the screen recording</a></b> — home, timeline, transitions, effects and live playback, in under a minute.<br>
+<sub>Sample output: <a href="https://clipcrafts.pages.dev/assets/caption-sample.mp4">word-by-word caption animation</a>, exported from ClipCraft.</sub></p>
 
 <p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-home.png" alt="The ClipCraft home screen: start a project in 16:9, 9:16, 1:1, 4:5 or 21:9 at 24, 30 or 60 fps, or jump back into a recent project" width="100%">
+  <img src="https://clipcrafts.pages.dev/assets/home.png" alt="The ClipCraft home screen: start a project in 16:9, 9:16, 1:1, 4:5 or 21:9 at 24, 30 or 60 fps, or jump back into a recent project" width="100%">
 </p>
 
 <p align="center"><sub><i>Start in the frame your video lives in</i> — landscape, vertical, square, portrait or cinematic, at 24, 30 or 60 fps. Reshape later, any time, in the editor. Recent projects return with real poster frames, and the Home screen carries the Support spot.</sub></p>
@@ -95,7 +96,7 @@ ClipCraft is a free, open-source desktop video editor and covers what people act
 - **Sequence guard** — if your footage doesn't match the project, ClipCraft asks before changing anything.
 
 <p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-crop.png" alt="Crop mode: the frame hugs the rendered picture with edge and centre handles, a thirds grid, alignment guides and a rotation slider" width="100%">
+  <img src="https://clipcrafts.pages.dev/assets/crop.png" alt="Crop mode: the frame hugs the rendered picture with edge and centre handles, a thirds grid, alignment guides and a rotation slider" width="100%">
 </p>
 
 <p align="center"><sub><i>Crop mode.</i> The frame is the picture itself — handles, centre move, centre guides and a −45°…+45° rotation control, with aspect presets that are true in source pixels. Done is one undo step; Cancel changes nothing.</sub></p>
@@ -113,16 +114,10 @@ Glitch & digital, film looks, light leaks and more — stack effects on any clip
 **54 original templates** in browsable rows — Basics, Captions, the **Craft** set, the **Motion** row of slide templates (Slide Up, Smooth Slide, Slide Blur, Rise & Fade…), and an Arabic row whose previews read «صُنع بواسطة ClipCraft». One click applies; favorites and search are built in.
 
 <p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-templates-craft.png" alt="Text templates — the Craft row: Violet Duo, Craft Pill, Accent Rule and more original designs" width="49%">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-templates-motion.png" alt="Text templates — the Motion row: Slide Up, Smooth Slide, Slide Down, Smooth Left, Smooth Right, Rise and Fade, Slide Blur" width="49%">
+  <img src="https://clipcrafts.pages.dev/assets/templates.png" alt="Text templates in ClipCraft: browsable rows of original designs with live previews" width="60%">
 </p>
 
-<p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-templates-arabic.png" alt="Text templates — the Arabic row, previewing «صُنع بواسطة ClipCraft»" width="49%">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-welcome.png" alt="The Welcome card: one card on first entry into a project — Welcome to ClipCraft, and a Start creating button" width="49%">
-</p>
-
-<p align="center"><sub><i>Left:</i> the Craft and Motion template rows. <i>Right:</i> the Arabic row, and the one-card Welcome that greets a first project — no tour, no steps.</sub></p>
+<p align="center"><sub>The Craft and Motion template rows, the Arabic row, and the one-card Welcome that greets a first project — no tour, no steps — are all pictured on the <a href="https://clipcrafts.pages.dev">ClipCraft site</a>.</sub></p>
 
 ## CraftAI
 
@@ -131,7 +126,7 @@ CraftAI is an AI editing assistant inside the editor: one-click looks, or just s
 ## Export
 
 <p align="center">
-  <img src="https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/shot-export-menu.png" alt="The export menu: Video (MP4), Audio only (MP3), Audio only (WAV), Audio only (M4A)" width="60%">
+  <img src="https://clipcrafts.pages.dev/assets/export.png" alt="The export menu: Video (MP4), Audio only (MP3), Audio only (WAV), Audio only (M4A)" width="60%">
 </p>
 
 <p align="center"><sub><i>Presets when you're in a hurry, full control when you're not</i> — MP4 video or audio-only (MP3 / WAV / M4A); codec, CRF or bitrate, resolution up to 4K, frame rate and audio quality.</sub></p>
