@@ -33,7 +33,6 @@ import TopBar from './components/TopBar.jsx';
 import SettingsDialog from './components/SettingsDialog.jsx';
 import { AboutDialog, UpdateNotice, useUpdateCheck } from './components/About.jsx';
 import WelcomeCard from './components/WelcomeCard.jsx';
-import PackPrompt from './components/PackPrompt.jsx';
 import ScreenRecordDialog from './components/ScreenRecordDialog.jsx';
 import { useScreenRecorder } from './useScreenRecorder.js';
 import CraftAI from './components/CraftPilot.jsx';
@@ -90,8 +89,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [quality, setQuality] = useState('full'); // Playback quality: which scaled copy the player uses
   const [aboutOpen, setAboutOpen] = useState(false);
-  // ---- First run: the welcome card, then the Creator Pack prompt — each shows exactly
-  // once (flags in settings.json via firstrun IPC); About replays the card on demand. ----
+  // ---- First run: the welcome card shows exactly once (flag in settings.json via
+  // firstrun IPC); About replays the card on demand. ----
   // B3 (2026-11-01): the multi-step tour became this single card. The persisted flag
   // keeps its name (tourSeen) so profiles that already saw the tour count as seen and
   // never get the card; the trigger and the dismissal chain are unchanged.
@@ -101,21 +100,14 @@ export default function App() {
   // only. tourSeen stays null until the persisted flags load, so a fast first click
   // can't slip past it either way.
   const [tourSeen, setTourSeen] = useState(null);
-  const [packPromptOpen, setPackPromptOpen] = useState(false);
-  const packPromptSeenRef = useRef(false);
-  // Builds that BUNDLE the pack (the test build) never show the download prompt — the
-  // library is already populated. The flag comes from the same assets:list the panels
-  // read; without a bundle nothing changes.
-  const packBundledRef = useRef(false);
+  // The Creator Pack prompt is GONE (Hamza, 2026-11-02: the pack is forgotten,
+  // it must never appear). The first-run flow is the Welcome card only — nothing
+  // chains after it. The pack machinery stays dormant in the main process.
   useEffect(() => {
     let alive = true;
-    const libP = window.api.assetsList ? window.api.assetsList().catch(() => null) : Promise.resolve(null);
-    Promise.all([window.api.firstRunGet?.(), libP]).then(([f, lib]) => {
+    Promise.resolve(window.api.firstRunGet?.()).then((f) => {
       if (!alive || !f) return;
-      packPromptSeenRef.current = !!f.packPromptSeen;
-      packBundledRef.current = !!lib?.bundled;
       setTourSeen(!!f.tourSeen);
-      if (f.tourSeen && !f.packPromptSeen && !lib?.bundled) setPackPromptOpen(true);
     }).catch(() => {});
     return () => { alive = false; };
   }, []);
@@ -123,12 +115,6 @@ export default function App() {
     setWelcomeOpen(false);
     setTourSeen(true);
     window.api.firstRunSet?.({ tourSeen: true }).catch(() => {});
-    if (!packPromptSeenRef.current && !packBundledRef.current) setPackPromptOpen(true);
-  }, []);
-  const closePackPrompt = useCallback(() => {
-    setPackPromptOpen(false);
-    packPromptSeenRef.current = true;
-    window.api.firstRunSet?.({ packPromptSeen: true }).catch(() => {});
   }, []);
   const [update, setUpdate] = useUpdateCheck(); // manual update check state (About dialog)
   const [updateSeen, setUpdateSeen] = useState(false);
@@ -1754,11 +1740,6 @@ export default function App() {
           onRestoreUnsaved={restoreUnsaved}
           onDiscardUnsaved={discardUnsaved} />
         {closeAsk && <CloseDialog name={closeAsk.name} onChoice={closeAsk.resolve} />}
-        {/* The welcome card is NEVER rendered on Home (Hamza, 2026-11-02): it lives
-            only in the editor tree below. welcomeOpen state may outlive a screen
-            flip; without a mount site here it cannot appear on Home in any
-            state ordering — returning to the editor re-renders it there. */}
-        {packPromptOpen && !welcomeOpen && <PackPrompt onClose={closePackPrompt} />}
       </div>
     );
   }
@@ -1841,7 +1822,6 @@ export default function App() {
       {aboutOpen && <AboutDialog update={update} onUpdate={setUpdate} onClose={() => { setAboutOpen(false); setUpdateSeen(true); }}
         onWelcome={() => { setAboutOpen(false); setWelcomeOpen(true); }} />}
       {welcomeOpen && <WelcomeCard onClose={closeWelcome} />}
-      {packPromptOpen && !welcomeOpen && <PackPrompt onClose={closePackPrompt} />}
       {closeAsk && <CloseDialog name={closeAsk.name} onChoice={closeAsk.resolve} />}
       {seqAsk && <SequenceDialog media={seqAsk.media} mismatch={seqAsk.mismatch}
         onChangeSettings={() => resolveSeq(true)} onKeepSettings={() => resolveSeq(false)} />}
