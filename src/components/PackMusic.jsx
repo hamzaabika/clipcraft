@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Pause, Play, Plus } from 'lucide-react';
 import SearchBox from './SearchBox.jsx';
-import PackOffer from './PackOffer.jsx';
 import { formatTime, toFileUrl } from '../store.js';
 import { assetAddWhere } from '../assetsLib.js';
 import { useAssets } from '../useAssets.js';
@@ -51,15 +50,14 @@ export default function PackMusic({ collection, onAddFile, group = 'Music' }) {
 
   return (
     <>
-      <div className="tab-title">{isMusic ? 'Music' : 'Sound effects'} · Pack — {collection}</div>
+      <div className="tab-title">{isMusic ? 'Music' : 'Sound effects'} · {collection}</div>
       {err && <p className="error-text">{err}</p>}
       {!lib ? (
         <p className="empty-note"><Loader2 size={14} className="spin" /> Reading the assets folder…</p>
       ) : !lib.hasLibrary || !items.length && !query ? (
         <>
-          <p className="empty-note">No {collection} {isMusic ? 'tracks' : 'sounds'} in the assets folder yet — the pack's {isMusic ? 'music' : 'sound effects'} is a free download, whenever you want it:</p>
-          <PackOffer categories={[isMusic ? 'music' : 'sfx']} />
-          <p className="lib-note">From your asset pack folder — free to use, no credits needed.</p>
+          <p className="empty-note">No {collection} {isMusic ? 'tracks' : 'sounds'} in the assets folder yet.</p>
+          <p className="lib-note">From your assets folder — free to use, no credits needed.</p>
         </>
       ) : (
         <>
@@ -85,7 +83,7 @@ export default function PackMusic({ collection, onAddFile, group = 'Music' }) {
             ))}
           </div>
           {!shown.length && <p className="empty-note">{items.length ? `Nothing in ${collection} matches “${q.trim()}”.` : `No ${collection} ${isMusic ? 'tracks' : 'sounds'} in the assets folder yet.`}</p>}
-          <p className="lib-note">From your asset pack folder — free to use, no credits needed.</p>
+          <p className="lib-note">From your assets folder — free to use, no credits needed.</p>
         </>
       )}
     </>

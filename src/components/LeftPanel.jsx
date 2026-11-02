@@ -6,7 +6,6 @@ import {
 } from 'lucide-react';
 import AssetsTab from './AssetsPanel.jsx';
 import PackMusic from './PackMusic.jsx';
-import PackOffer from './PackOffer.jsx';
 import { useAssets } from '../useAssets.js';
 import { mediaTreeCounts, mediaTreeFilter } from '../assetsLib.js';
 import ForgePanel from './ForgePanel.jsx';
@@ -294,8 +293,8 @@ function AudioTab(props) {
   // routed by AudioLibrary to the pack list) — pack audio lives in Audio, with the
   // music, not in Assets (Hamza, 2026-11-01).
   const packSfxSubs = lib ? [...new Set(lib.items.filter((i) => i.group === 'Sound FX' && i.sub).map((i) => i.sub))] : [];
-  const catChips = view === 'music' ? [...packSubs.map((s) => [`music:pack:${s}`, `Pack · ${s}`]), ...MUSIC_TAGS.map(([c]) => [`music:${c}`, c])]
-    : view === 'sfx' ? [...packSfxSubs.map((s) => [`sfx:pack:${s}`, `Pack · ${s}`]), ...SFX_TAGS.map(([c]) => [`sfx:${c}`, c])]
+  const catChips = view === 'music' ? [...packSubs.map((s) => [`music:pack:${s}`, `${s}`]), ...MUSIC_TAGS.map(([c]) => [`music:${c}`, c])]
+    : view === 'sfx' ? [...packSfxSubs.map((s) => [`sfx:pack:${s}`, `${s}`]), ...SFX_TAGS.map(([c]) => [`sfx:${c}`, c])]
     : view === 'soundza' ? SOUNDZA_TAGS.map(([c]) => [`soundza:${c}`, c])
     : view === 'trolls' ? TROLL_TAGS.map(([c]) => [`trolls:${c}`, c])
     : null;
@@ -313,18 +312,6 @@ function AudioTab(props) {
           {catChips.map(([id, label]) => (
             <button key={id} className={`chip ${sub === id ? 'on' : ''}`} aria-pressed={sub === id} onClick={() => setSub(id)}>{label}</button>
           ))}
-        </div>
-      )}
-      {view === 'music' && lib && !packSubs.length && (
-        <div className="pad-block pack-music-offer">
-          <p className="empty-note">The free Creator Pack's music is not installed yet:</p>
-          <PackOffer categories={['music']} />
-        </div>
-      )}
-      {view === 'sfx' && lib && !packSfxSubs.length && (
-        <div className="pad-block pack-music-offer">
-          <p className="empty-note">The free Creator Pack's sound effects are not installed yet:</p>
-          <PackOffer categories={['sfx']} />
         </div>
       )}
       <div className="pad-block">

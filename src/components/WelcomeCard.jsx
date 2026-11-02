@@ -4,8 +4,7 @@ import React, { useEffect } from 'react';
 // ONE card on a dimmed editor backdrop — the ClipCraft logo, a greeting, one line,
 // and a single "Start creating" button. It shows exactly once, on the first entry
 // into a project (App owns the trigger and the persisted seen flag, unchanged from
-// the tour's semantics); dismissing it runs the same close path the tour used, so
-// whatever chained off the tour (the Creator Pack prompt) still chains off this.
+// the tour's semantics); dismissing it ends the first-run flow — nothing follows it.
 export default function WelcomeCard({ onClose }) {
   useEffect(() => {
     const onKey = (e) => {
