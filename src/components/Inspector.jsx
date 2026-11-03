@@ -263,14 +263,32 @@ export function RegionControls({ region, onChange, dispatch }) {
             ))}
             <button className={`chip ${r.invert ? 'on' : ''}`} aria-pressed={!!r.invert} onClick={() => set({ invert: !r.invert })}>Invert</button>
           </div>
-          {S({ label: 'Position X', value: r.x, min: 0, max: 0.95, step: 0.01, fmt: pct, onChange: (x) => set({ x }) })}
-          {S({ label: 'Position Y', value: r.y, min: 0, max: 0.95, step: 0.01, fmt: pct, onChange: (y) => set({ y }) })}
-          {S({ label: 'Width', value: r.w, min: 0.05, max: 1, step: 0.01, fmt: pct, onChange: (w) => set({ w }) })}
-          {S({ label: 'Height', value: r.h, min: 0.05, max: 1, step: 0.01, fmt: pct, onChange: (h) => set({ h }) })}
-          {S({ label: 'Feather', value: r.feather, min: 0, max: 0.3, step: 0.01, fmt: pct, onChange: (feather) => set({ feather }) })}
+          {S({ label: 'Position X', value: r.x, min: 0, max: 0.95, step: 0.01, fmt: pct, numScale: 100, onChange: (x) => set({ x }) })}
+          {S({ label: 'Position Y', value: r.y, min: 0, max: 0.95, step: 0.01, fmt: pct, numScale: 100, onChange: (y) => set({ y }) })}
+          {S({ label: 'Width', value: r.w, min: 0.05, max: 1, step: 0.01, fmt: pct, numScale: 100, onChange: (w) => set({ w }) })}
+          {S({ label: 'Height', value: r.h, min: 0.05, max: 1, step: 0.01, fmt: pct, numScale: 100, onChange: (h) => set({ h }) })}
+          {S({ label: 'Feather', value: r.feather, min: 0, max: 0.3, step: 0.01, fmt: pct, numScale: 100, onChange: (feather) => set({ feather }) })}
           <p className="dim small">You can also drag the dashed box on the player.</p>
         </>
       )}
+    </div>
+  );
+}
+
+// ---- Effect strength: how strongly an effect instance lands (0..1, absent = 1) ----
+// Shader effects take it as a mix with the untouched picture and particle layers as
+// opacity (src/fx/apply.js); a classic effect on a clip is routed through its shader
+// form as soon as the strength drops below 1. Mirror and Flip are geometric — they
+// have no in-between — so they get no strength control.
+const NO_STRENGTH = ['mirror', 'flipv'];
+export function StrengthControl({ value, onChange, dispatch }) {
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  const S = (p) => <Slider dispatch={dispatch} {...p} />;
+  return (
+    <div className="insp-card">
+      <div className="insp-card-title">Strength</div>
+      {S({ label: 'Intensity', value: value ?? 1, min: 0, max: 1, step: 0.01, fmt: pct, numScale: 100, onChange })}
+      <p className="dim small">How strongly the effect lands — 0% is the untouched picture.</p>
     </div>
   );
 }
@@ -303,6 +321,8 @@ function FreeEffectPanel({ project, selection, dispatch, onAddTextOver = null })
       <Num label="Start (s)" value={c.start} min={0} onChange={(start) => set({ start: Math.max(0, start) })} />
       <Num label="Duration (s)" value={c.duration} min={0.1} onChange={(d) => set({ duration: Math.max(0.1, d) })} />
       </div>
+      {!NO_STRENGTH.includes(c.fx) && <StrengthControl value={c.strength} dispatch={dispatch}
+        onChange={(k) => set({ strength: k >= 1 ? undefined : k })} />}
       <RegionControls region={c.region || null} dispatch={dispatch}
         onChange={(region) => set({ region: region ?? undefined })} />
       <AddTextCard onAddTextOver={onAddTextOver} start={c.start} duration={c.duration} />
@@ -325,20 +345,20 @@ function EffectPanel({ project, selection, dispatch, onAddTextOver = null }) {
     if (region) next[fx] = region; else delete next[fx];
     dispatch({ type: 'update', track, id: clipId, patch: { fxRegions: next } });
   };
-  // The classic effects (Blur, Grain, …) run through CSS/FFmpeg look filters when attached to a
-  // clip — they have no shader pass to mix, so a region cannot confine them there. (On the
-  // Effects track the same effects DO take a region: they run as shader passes there.)
-  const classic = ['mirror', 'flipv', 'vignette', 'grain', 'blur', 'pixel'].includes(fx);
+  // Strength storage likewise: the clip's fxStrength map (absent = full strength).
+  const setStrength = (k) => {
+    const next = { ...(clip.fxStrength || {}) };
+    if (k == null || k >= 1) delete next[fx]; else next[fx] = k;
+    dispatch({ type: 'update', track, id: clipId, patch: { fxStrength: next } });
+  };
   return (
     <div className="fields">
       <div className="fx-head"><span className="fx-icon">{e?.icon || '✨'}</span><div><b>{e?.name || fx}</b><span className="dim">on {media?.name || 'clip'}</span></div></div>
       <div className="insp-card">
       <p className="dim small">The effect runs for the whole clip and moves with it. Remove it here, with Delete, or from the right-click menu.</p>
       </div>
-      {classic
-        ? <div className="insp-card"><div className="insp-card-title">Region</div>
-            <p className="dim small">This classic effect applies to the whole frame when attached to a clip. To confine it to one area, add it from the Effects track instead — there it takes a region like every other effect.</p></div>
-        : <RegionControls region={clip.fxRegions?.[fx] || null} dispatch={dispatch} onChange={setRegion} />}
+      {!NO_STRENGTH.includes(fx) && <StrengthControl value={clip.fxStrength?.[fx]} dispatch={dispatch} onChange={setStrength} />}
+      <RegionControls region={clip.fxRegions?.[fx] || null} dispatch={dispatch} onChange={setRegion} />
       <AddTextCard onAddTextOver={onAddTextOver} start={clipStartTl(project, track, clip)} duration={clipLenTl(track, clip)} />
       <button className="btn btn-danger" onClick={() => dispatch({ type: 'removeEffect', id: selection.id })}>Remove effect</button>
     </div>
@@ -415,7 +435,7 @@ export default function Inspector({ project, selection, dispatch, duration, time
           <div className="insp-card">
             <div className="insp-card-title">Clip audio</div>
             <div className="info">{media?.name}</div>
-            {S({ label: 'Volume', value: clip.volume ?? 1, max: 2, fmt: pct, onChange: (volume) => set({ volume }) })}
+            {S({ label: 'Volume', value: clip.volume ?? 1, max: 2, fmt: pct, numScale: 100, onChange: (volume) => set({ volume }) })}
             {S({ label: 'Fade in', value: clip.fadeIn || 0, max: 5, step: 0.1, fmt: (v) => `${v.toFixed(1)}s`, onChange: (fadeIn) => set({ fadeIn }) })}
             {S({ label: 'Fade out', value: clip.fadeOut || 0, max: 5, step: 0.1, fmt: (v) => `${v.toFixed(1)}s`, onChange: (fadeOut) => set({ fadeOut }) })}
             <Num label="Timeline start (s)" value={clip.start} min={0} onChange={(start) => set({ start: Math.max(0, start) })} />

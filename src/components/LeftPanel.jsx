@@ -17,7 +17,7 @@ import { BUNDLED_LUTS } from '../fx/lut.js';
 import { loadLutLibrary, saveLutLibrary, addLutEntry, removeLutEntry } from '../fx/lutlib.js';
 import { formatTime, previewPath, proxyPrefOn, toFileUrl, uid } from '../store.js';
 import { COLLECTIONS, PACKS, COLLECTION_ITEMS, loadFavorites, saveFavorites, toggleFavorite } from '../fx/collections.js';
-import { parseSRT } from '../subtitles.js';
+import { parseSRT, regroupSegments } from '../subtitles.js';
 import { DEFAULT_ADJUST, EFFECTS, EFFECT_GROUPS, FILTERS, TRANSITIONS } from '../effects.js';
 import { dragProps } from '../dnd.js';
 import Slider from './Slider.jsx';
@@ -341,7 +341,7 @@ function TextTab({ onAddText, sub, setSub }) {
 
 function NeedClip({ target }) {
   if (target) return null;
-  return <p className="hint">Select a video clip in the timeline, or drag an item onto a clip.</p>;
+  return <p className="hint">Select a picture clip (main track or overlay) in the timeline, or drag an item onto a clip.</p>;
 }
 
 function EffectsTab({ target, updateTarget, clipSelected, onAddFreeEffect, onAddTextOver }) {
@@ -570,6 +570,9 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
     if (project.textClips.some((c) => c.caption)) dispatch({ type: 'styleCaptions', patch: { ...t.patch, template: t.id } });
   };
   const [len, setLen] = useState(42);
+  // Words per caption line (0 = no limit, the historical behaviour). Applies to auto
+  // captions when generating and to .srt imports below alike.
+  const [wpl, setWpl] = useState(0);
   const count = project.textClips.filter((c) => c.caption).length;
   // Imported .srt subtitles: their own clips (source: 'srt'), styled separately from auto captions.
   const srtCount = project.textClips.filter((c) => c.source === 'srt').length;
@@ -580,7 +583,7 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
-    const cues = parseSRT(await f.text());
+    const cues = regroupSegments(parseSRT(await f.text()), wpl);
     if (!cues.length) { setSrtNote('No subtitle cues were found in that file.'); return; }
     const t = TEXT_TEMPLATES.find((x) => x.id === srtTplId) || tpl;
     dispatch({ type: 'importSrtCaptions', style: { ...t.patch, template: t.id }, segments: cues.map((c) => ({ ...c, id: uid() })) });
@@ -674,10 +677,14 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
           <span>Max line length <b>{len}</b></span>
           <input type="range" min="16" max="80" step="2" value={len} disabled={busy} onChange={(e) => setLen(Number(e.target.value))} />
         </label>
+        <label className="field">
+          <span>Words per line <b>{wpl ? wpl : 'No limit'}</b></span>
+          <input type="range" min="0" max="12" step="1" value={wpl} disabled={busy} onChange={(e) => setWpl(Number(e.target.value))} aria-label="Words per caption line" />
+        </label>
         <button className="btn btn-primary btn-block" disabled={busy || !(project.videoClips.length || project.audioClips.length) || (engine === 'cloud' && !savedHint)}
           onClick={() => (engine === 'cloud'
-            ? captions.run({ engine: 'cloud', provider, model: cloudModel.trim() || undefined, language: lang, maxLen: len, source, style: { ...tpl.patch, template: tpl.id } })
-            : captions.run({ language: modelInfo.arabicOnly ? 'ar' : lang, maxLen: len, source, model, style: { ...tpl.patch, template: tpl.id } }))}>
+            ? captions.run({ engine: 'cloud', provider, model: cloudModel.trim() || undefined, language: lang, maxLen: len, wordsPerLine: wpl, source, style: { ...tpl.patch, template: tpl.id } })
+            : captions.run({ language: modelInfo.arabicOnly ? 'ar' : lang, maxLen: len, wordsPerLine: wpl, source, model, style: { ...tpl.patch, template: tpl.id } }))}>
           {busy ? 'Working…' : count ? 'Regenerate' : 'Generate captions'}
         </button>
         {engine === 'cloud' && !savedHint && <p className="muted small">Save your {cloudMeta.name} API key to generate with the cloud engine.</p>}
@@ -707,6 +714,7 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
           : 'Import a SubRip file: every cue becomes an editable caption clip at its exact time in the file.'}</p>
         <input ref={srtFileRef} type="file" accept=".srt" hidden onChange={onSrtFile} aria-label="Choose an .srt subtitle file" />
         <button className="btn btn-sm" onClick={() => srtFileRef.current?.click()}><Upload size={14} /> Import .srt file…</button>
+        <p className="muted small">The Words per line setting above applies to imported cues too: longer cues are split into consecutive lines inside their own time span.</p>
         {srtNote && <p className="muted small">{srtNote}</p>}
         {srtCount > 0 && (
           <>

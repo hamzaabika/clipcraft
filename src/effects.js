@@ -84,7 +84,7 @@ export function clipCss(clip) {
   if (a.contrast !== 1) parts.push(`contrast(${a.contrast})`);
   if (a.saturation !== 1) parts.push(`saturate(${a.saturation})`);
   if (a.hue) parts.push(`hue-rotate(${a.hue}deg)`);
-  const blur = a.blur + (clip.effects?.includes('blur') ? 6 : 0);
+  const blur = a.blur + (clip.effects?.includes('blur') && !clip.fxRegions?.blur && !(clip.fxStrength?.blur != null && clip.fxStrength.blur < 1) ? 6 : 0);
   if (blur) parts.push(`blur(${blur}px)`);
   return parts.join(' ');
 }

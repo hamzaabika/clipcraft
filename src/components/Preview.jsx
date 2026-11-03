@@ -16,7 +16,7 @@ import MediaPeek from './MediaPeek.jsx';
 import { fxTransition } from '../fx/catalog.js';
 import { easeValue } from '../fx/easing.js';
 import { fxGL } from '../fx/gl.js';
-import { drawOverlayPasses, pixelPasses } from '../fx/apply.js';
+import { classicViaShader, drawOverlayPasses, pixelPasses } from '../fx/apply.js';
 import { anchorCorrection, interpolateTime } from '../playbackClock.js';
 
 
@@ -377,8 +377,8 @@ export default function Preview({
       Object.assign(layer.style, layerStyle(c, project.width, project.height, motionNow));
       if (decos[k].current) Object.assign(decos[k].current.style, decoStyle(c, project.width, project.height, motionNow));
       const chroma = chromaOf(c);
-      slot.classList.toggle('vignette', fx.includes('vignette'));
-      const flip = `scale(${fx.includes('mirror') ? -1 : 1}, ${fx.includes('flipv') ? -1 : 1})`;
+      slot.classList.toggle('vignette', fx.includes('vignette') && !classicViaShader(c, 'vignette'));
+      const flip = `scale(${fx.includes('mirror') && !classicViaShader(c, 'mirror') ? -1 : 1}, ${fx.includes('flipv') && !classicViaShader(c, 'flipv') ? -1 : 1})`;
       if (tr) Object.assign(slot.style, item === incoming ? tr.in : tr.out);
       if (m.type === 'image') {
         v.style.display = 'none';
@@ -479,7 +479,8 @@ export default function Preview({
       const motionNow = (hasMotion(c) || c.pin) ? stateAtPinned(project, { track: 'overlay', clip: c }, lt, clipLen(c)) : undefined;
       Object.assign(el.layer.style, layerStyle(c, project.width, project.height, motionNow));
       if (el.deco) Object.assign(el.deco.style, decoStyle(c, project.width, project.height, motionNow));
-      const flip = `scale(${fx.includes('mirror') ? -1 : 1}, ${fx.includes('flipv') ? -1 : 1})`;
+      el.slot.classList.toggle('vignette', fx.includes('vignette') && !classicViaShader(c, 'vignette'));
+      const flip = `scale(${fx.includes('mirror') && !classicViaShader(c, 'mirror') ? -1 : 1}, ${fx.includes('flipv') && !classicViaShader(c, 'flipv') ? -1 : 1})`;
       const chroma = chromaOf(c);
       const src = m.type === 'image' ? el.img : el.v;
       src.style.transform = flip;

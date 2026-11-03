@@ -1067,7 +1067,7 @@ const MAX_TILES = 400;
 // position on the timeline (follows trim, speed and zoom). Uses the sprite from makeVisuals.
 function Filmstrip({ m, clip, width, pps }) {
   if (!m) return null;
-  const look = { filter: clipCss(clip) || undefined, transform: clip.effects?.includes('mirror') ? 'scaleX(-1)' : undefined };
+  const look = { filter: clipCss(clip) || undefined, transform: clip.effects?.includes('mirror') && !clip.fxRegions?.mirror && !(clip.fxStrength?.mirror != null && clip.fxStrength.mirror < 1) ? 'scaleX(-1)' : undefined };
   if (m.type === 'image') {
     return <div className="filmstrip" style={{ ...look, backgroundImage: `url("${toFileUrl(m.path)}")`, backgroundSize: `auto ${THUMB_H}px`, backgroundRepeat: 'repeat-x' }} />;
   }

@@ -131,6 +131,9 @@ input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--primary)
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > span { color: var(--text-2); font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .field > span b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.field > span b.slider-value { cursor: text; padding: 0 3px; margin: 0 -3px; border-radius: 3px; }
+.field > span b.slider-value:hover { background: var(--surface-4); }
+.field > span input.slider-value { width: 56px; background: var(--surface-3); border: 1px solid var(--violet); color: var(--text); font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; border-radius: 3px; padding: 0 3px; outline: none; }
 .field.row { flex-direction: row; align-items: center; justify-content: space-between; }
 .field.pad { padding: 0 14px 12px; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; }

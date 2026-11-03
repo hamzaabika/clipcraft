@@ -5,9 +5,12 @@
 //     they act on every picture under them, their time T starts with the effect.
 // The Effects panel offers the same tiles for both places, including the six classic effects of
 // src/effects.js (blur, grain, vignette, pixel, mirror, flipv). On a clip those run through CSS
-// (preview) and FFmpeg look filters (export); on the track they need a shader form, because a
-// track effect covers only part of a clip. TRACK_CLASSIC below is that form — the same looks as
-// shader passes, so the player and the export bake them identically over the covered frames.
+// (preview) and FFmpeg look filters (export) — unless the instance carries a region or a
+// strength below 1, which the look paths cannot express: then the clip instance is routed
+// through its shader form too (classicViaShader below). On the track they always need a
+// shader form, because a track effect covers only part of a clip. TRACK_CLASSIC below is
+// that form — the same looks as shader passes, so the player and the export bake them
+// identically over the covered frames.
 // (Before this map existed, a classic effect on the Effects track rendered NOTHING anywhere:
 // freeOn collected the clip, then both pass builders discarded it as neither pixel nor overlay.)
 import { OVERLAY_EFFECTS, PIXEL_EFFECTS } from './catalog.js';
@@ -69,6 +72,30 @@ export function regionWrap(expr, region) {
   return `${head} st(9, ${regionMaskExpr(region)}); S(X, Y)*(1 - ld(9)) + (${tail})*ld(9)`;
 }
 
+// ---- Effect strength ----
+// Every effect instance carries an optional strength (0..1, absent = 1 = the effect as
+// authored). For shader effects the strength is a mix with the untouched picture — the same
+// mechanism as a region, with the mask scaled by the strength — so it works uniformly for
+// the whole catalog (whose expressions take no parameters) in the preview and the export
+// alike (both run pixelPasses). A strength of 0 removes the pass entirely.
+export function fxWrap(expr, region, k) {
+  const s = k == null ? 1 : k;
+  if (s >= 1) return regionWrap(expr, region);
+  const i = expr.lastIndexOf(';');
+  const head = i >= 0 ? expr.slice(0, i + 1) : '';
+  const tail = i >= 0 ? expr.slice(i + 1) : expr;
+  if (!region) return `${head} S(X, Y)*(1 - ${fnum(s)}) + (${tail})*${fnum(s)}`;
+  return `${head} st(9, (${regionMaskExpr(region)}) * ${fnum(s)}); S(X, Y)*(1 - ld(9)) + (${tail})*ld(9)`;
+}
+
+// A classic effect attached to a clip normally runs through the CSS (preview) / FFmpeg
+// (export) look path, which paints the whole frame and takes neither a region nor a
+// strength. When the instance carries a region, or a strength below 1, it is routed
+// through its shader form instead (TRACK_CLASSIC + fxWrap, exactly like the Effects
+// track), and the look paths skip it — see clipCss / Preview flips / lookFilters.
+export const classicViaShader = (clip, id) =>
+  isClassic(id) && (!!clip?.fxRegions?.[id] || (clip?.fxStrength?.[id] != null && clip.fxStrength[id] < 1));
+
 const freeOn = (project, t) => (project.effectClips || []).filter((e) => !e.disabled && t >= e.start && t < e.start + e.duration);
 
 // Shader passes for a picture clip that starts at clipStart on the timeline, lt seconds into it: [{ expr, T }].
@@ -88,18 +115,25 @@ export function pixelPasses(project, clip, clipStart, lt) {
   if (lut) list.push({ lut, K: (clip.grade.lut.intensity ?? 100) / 100 });
   const grade = hasGrade(clip) ? gradeExpr(clip.grade) : null;
   if (grade) list.push({ expr: grade, T: lt });
-  list.push(...(clip.effects || []).filter(isPixel).map((id) => ({ expr: regionWrap(PIXEL[id], clip.fxRegions?.[id]), T: lt })));
+  for (const id of clip.effects || []) {
+    const k = clip.fxStrength?.[id];
+    if (k === 0) continue;
+    if (isPixel(id)) list.push({ expr: fxWrap(PIXEL[id], clip.fxRegions?.[id], k), T: lt });
+    else if (classicViaShader(clip, id)) list.push({ expr: fxWrap(TRACK_CLASSIC[id], clip.fxRegions?.[id], k), T: lt });
+  }
   const t = clipStart + lt;
   for (const e of freeOn(project, t)) {
-    if (isPixel(e.fx)) list.push({ expr: regionWrap(PIXEL[e.fx], e.region), T: t - e.start });
-    else if (isClassic(e.fx)) list.push({ expr: regionWrap(TRACK_CLASSIC[e.fx], e.region), T: t - e.start });
+    const k = e.strength;
+    if (k === 0) continue;
+    if (isPixel(e.fx)) list.push({ expr: fxWrap(PIXEL[e.fx], e.region, k), T: t - e.start });
+    else if (isClassic(e.fx)) list.push({ expr: fxWrap(TRACK_CLASSIC[e.fx], e.region, k), T: t - e.start });
   }
   return list;
 }
 
 // True when some pixel effect touches the clip's time range (it then needs the effects pass at export).
 export function clipHasPixelFx(project, clip, clipStart, len) {
-  if (hasFilter(clip) || hasGrade(clip) || lutOn(clip.grade?.lut) || (clip.effects || []).some(isPixel)) return true;
+  if (hasFilter(clip) || hasGrade(clip) || lutOn(clip.grade?.lut) || (clip.effects || []).some((id) => isPixel(id) || classicViaShader(clip, id))) return true;
   return (project.effectClips || []).some((e) => !e.disabled && isShaderFx(e.fx) && e.start < clipStart + len && e.start + e.duration > clipStart);
 }
 
@@ -160,16 +194,24 @@ function drawRegioned(ctx, W, H, region, draw) {
 }
 
 // Particle / light layers drawn over the frame at time t (project pixels W x H).
+// An instance's strength is the layer's opacity while it is drawn (the scratch-canvas
+// region path composites through the same context, so the alpha lands there too).
+function drawStrength(ctx, k, draw) {
+  if (k == null || k >= 1 || k === 0) { if (k !== 0) draw(ctx); return; }
+  ctx.save();
+  ctx.globalAlpha = k;
+  try { draw(ctx); } finally { ctx.restore(); }
+}
 export function drawOverlayPasses(ctx, project, t, W, H) {
   for (const l of videoLayout(project.videoClips)) {
     if (l.clip.gap || t < l.start || t >= l.end) continue;
-    for (const id of l.clip.effects || []) if (OVERLAY[id]) drawRegioned(ctx, W, H, l.clip.fxRegions?.[id], (c2) => OVERLAY[id](c2, W, H, t - l.start));
+    for (const id of l.clip.effects || []) if (OVERLAY[id]) drawStrength(ctx, l.clip.fxStrength?.[id], (c1) => drawRegioned(c1, W, H, l.clip.fxRegions?.[id], (c2) => OVERLAY[id](c2, W, H, t - l.start)));
   }
   for (const c of project.overlayClips || []) {
     if (t < c.start || t >= c.start + freeLen('overlay', c)) continue;
-    for (const id of c.effects || []) if (OVERLAY[id]) drawRegioned(ctx, W, H, c.fxRegions?.[id], (c2) => OVERLAY[id](c2, W, H, t - c.start));
+    for (const id of c.effects || []) if (OVERLAY[id]) drawStrength(ctx, c.fxStrength?.[id], (c1) => drawRegioned(c1, W, H, c.fxRegions?.[id], (c2) => OVERLAY[id](c2, W, H, t - c.start)));
   }
-  for (const e of freeOn(project, t)) if (OVERLAY[e.fx]) drawRegioned(ctx, W, H, e.region, (c2) => OVERLAY[e.fx](c2, W, H, t - e.start));
+  for (const e of freeOn(project, t)) if (OVERLAY[e.fx]) drawStrength(ctx, e.strength, (c1) => drawRegioned(c1, W, H, e.region, (c2) => OVERLAY[e.fx](c2, W, H, t - e.start)));
 }
 
 // Time ranges with a particle / light layer, so the export knows which frames to draw.

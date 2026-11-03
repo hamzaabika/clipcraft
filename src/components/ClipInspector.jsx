@@ -321,7 +321,7 @@ export default function ClipInspector({ clip, media, project, set, dispatch, tra
             <>
               <Section title="Transform" keys={keys(['scale', 'x', 'y', 'rot'], 'transform')}
                 onReset={() => set({ transform: { ...DEFAULT_TRANSFORM }, keyframes: dropKeys(['scale', 'x', 'y', 'rot']) })}>
-                {S({ label: 'Scale', value: t.scale, min: 0.05, max: 4, step: 0.01, fmt: pct, onChange: (scale) => setT({ scale }), extra: keys(['scale'], 'scale') })}
+                {S({ label: 'Scale', value: t.scale, min: 0.05, max: 4, step: 0.01, fmt: pct, numScale: 100, onChange: (scale) => setT({ scale }), extra: keys(['scale'], 'scale') })}
                 <div className="fitfill-row">
                   <button type="button" className="btn btn-sm" onClick={() => fitFill('fit')}
                     title="Show the whole picture inside the frame">Fit</button>
@@ -335,8 +335,8 @@ export default function ClipInspector({ clip, media, project, set, dispatch, tra
                 </label>
                 {!t.uniform && (
                   <>
-                    {S({ label: 'Scale width', value: t.scaleX, min: 0.05, max: 4, step: 0.01, fmt: pct, onChange: (scaleX) => setT({ scaleX }) })}
-                    {S({ label: 'Scale height', value: t.scaleY, min: 0.05, max: 4, step: 0.01, fmt: pct, onChange: (scaleY) => setT({ scaleY }) })}
+                    {S({ label: 'Scale width', value: t.scaleX, min: 0.05, max: 4, step: 0.01, fmt: pct, numScale: 100, onChange: (scaleX) => setT({ scaleX }) })}
+                    {S({ label: 'Scale height', value: t.scaleY, min: 0.05, max: 4, step: 0.01, fmt: pct, numScale: 100, onChange: (scaleY) => setT({ scaleY }) })}
                   </>
                 )}
                 <div className="numrow keyed">
@@ -382,7 +382,7 @@ export default function ClipInspector({ clip, media, project, set, dispatch, tra
                     {BLEND_MODES.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
                 </label>
-                {S({ label: 'Opacity', value: at.opacity, min: 0, max: 1, step: 0.01, fmt: pct, onChange: (opacity) => setT({ opacity }), extra: keys(['opacity'], 'opacity') })}
+                {S({ label: 'Opacity', value: at.opacity, min: 0, max: 1, step: 0.01, fmt: pct, numScale: 100, onChange: (opacity) => setT({ opacity }), extra: keys(['opacity'], 'opacity') })}
                 {['mirror', 'flipv'].map((id) => (
                   <label className="field row" key={id}>
                     <span>{id === 'mirror' ? 'Flip horizontal' : 'Flip vertical'}</span>
@@ -486,9 +486,9 @@ export default function ClipInspector({ clip, media, project, set, dispatch, tra
                     <NumBox label="Y" value={Number((mask.y * H).toFixed(1))} precision={1} suffix="px" onChange={(v) => setM({ y: v / H })} />
                   </div>
                   {S({ label: 'Rotate', value: mask.rot, min: -180, max: 180, step: 1, fmt: (v) => `${v}°`, onChange: (rot) => setM({ rot }) })}
-                  {mask.type !== 'split' && S({ label: mask.type === 'filmstrip' ? 'Band height' : 'Height', value: mask.h, min: 0.02, max: 2, step: 0.01, fmt: pct, onChange: (h) => setM({ h }) })}
-                  {!['split', 'filmstrip', 'text'].includes(mask.type) && S({ label: 'Width', value: mask.w, min: 0.02, max: 2, step: 0.01, fmt: pct, onChange: (w) => setM({ w }) })}
-                  {mask.type === 'rectangle' && S({ label: 'Round corners', value: mask.round, min: 0, max: 1, step: 0.01, fmt: pct, onChange: (round) => setM({ round }) })}
+                  {mask.type !== 'split' && S({ label: mask.type === 'filmstrip' ? 'Band height' : 'Height', value: mask.h, min: 0.02, max: 2, step: 0.01, fmt: pct, numScale: 100, onChange: (h) => setM({ h }) })}
+                  {!['split', 'filmstrip', 'text'].includes(mask.type) && S({ label: 'Width', value: mask.w, min: 0.02, max: 2, step: 0.01, fmt: pct, numScale: 100, onChange: (w) => setM({ w }) })}
+                  {mask.type === 'rectangle' && S({ label: 'Round corners', value: mask.round, min: 0, max: 1, step: 0.01, fmt: pct, numScale: 100, onChange: (round) => setM({ round }) })}
                   {S({ label: 'Feather', value: mask.feather, min: 0, max: 100, step: 1, onChange: (feather) => setM({ feather }) })}
                   <label className="field row">
                     <span>Invert</span>
@@ -531,7 +531,7 @@ export default function ClipInspector({ clip, media, project, set, dispatch, tra
       {tab === 'audio' && (
         <>
           <Section title="Basic">
-            {S({ label: 'Volume', value: clip.volume ?? 1, max: 2, fmt: pct, onChange: (volume) => set({ volume }) })}
+            {S({ label: 'Volume', value: clip.volume ?? 1, max: 2, fmt: pct, numScale: 100, onChange: (volume) => set({ volume }) })}
             <AudioFxControls fx={clip.audioFx} onChange={(audioFx) => set({ audioFx })} />
             <label className="field row">
               <span>Mute</span>

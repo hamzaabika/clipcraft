@@ -55,3 +55,33 @@ export function parseSRT(input) {
 export function srtSegments(input, makeId) {
   return parseSRT(input).map((s, i) => ({ ...s, id: makeId ? makeId(i) : `srt-${i}` }));
 }
+
+// Re-group caption segments so none carries more than `n` words: a longer segment is
+// split into consecutive chunks of at most n words, each chunk timed by its word share
+// of the original span (chunk i covers words [i, i+n) of the segment's [start, end]).
+// Word count and order are preserved exactly; multi-line text is re-joined with single
+// spaces. n < 1 (or unset) returns the segments untouched — the historical behaviour.
+// Used for .srt imports and for auto captions alike (the engines' segments pass through
+// the same regroup in App's runCaptions). Chunked pieces carry no id — callers assign
+// fresh ids to the result, as both import flows already do.
+export function regroupSegments(segments, n) {
+  const limit = Math.floor(Number(n) || 0);
+  if (limit < 1) return segments;
+  const out = [];
+  for (const s of segments || []) {
+    const words = String(s.text || '').trim().split(/\s+/).filter(Boolean);
+    if (words.length <= limit) { out.push(s); continue; }
+    const { id, ...base } = s;
+    const span = Math.max(0, (Number(s.end) || 0) - (Number(s.start) || 0));
+    for (let i = 0; i < words.length; i += limit) {
+      const chunk = words.slice(i, i + limit);
+      out.push({
+        ...base,
+        start: (Number(s.start) || 0) + (span * i) / words.length,
+        end: (Number(s.start) || 0) + (span * (i + chunk.length)) / words.length,
+        text: chunk.join(' '),
+      });
+    }
+  }
+  return out;
+}

@@ -89,19 +89,23 @@ function atempo(speed) {
 function lookFilters(clip, W, H) {
   const f = [];
   const fx = clip.effects || [];
-  if (fx.includes('mirror')) f.push('hflip');
-  if (fx.includes('flipv')) f.push('vflip');
+  // A classic effect carrying a region, or a strength below 1, is baked by the effects
+  // pass through its shader form instead (src/fx/apply.js classicViaShader) — the flat
+  // look filters here must not paint it a second time.
+  const viaShader = (id) => !!(clip.fxRegions?.[id] || (clip.fxStrength?.[id] != null && clip.fxStrength[id] < 1));
+  if (fx.includes('mirror') && !viaShader('mirror')) f.push('hflip');
+  if (fx.includes('flipv') && !viaShader('flipv')) f.push('vflip');
   // clip.filter is drawn by the effects pass (GPU, src/fx/filters.js), like in the player.
   const a = { brightness: 0, contrast: 1, saturation: 1, hue: 0, blur: 0, ...(clip.adjust || {}) };
   if (a.brightness || a.contrast !== 1 || a.saturation !== 1) {
     f.push(`eq=brightness=${num(a.brightness * 0.5)}:contrast=${num(a.contrast)}:saturation=${num(a.saturation)}`);
   }
   if (a.hue) f.push(`hue=h=${num(a.hue)}`);
-  const blur = Math.round((a.blur + (fx.includes('blur') ? 6 : 0)) * (W / 640));
+  const blur = Math.round((a.blur + (fx.includes('blur') && !viaShader('blur') ? 6 : 0)) * (W / 640));
   if (blur > 0) f.push(`boxblur=${Math.min(blur, Math.floor(Math.min(W, H) / 2) - 1)}`);
-  if (fx.includes('vignette')) f.push('vignette=PI/4');
-  if (fx.includes('grain')) f.push('noise=alls=18:allf=t');
-  if (fx.includes('pixel')) f.push(`scale=iw/24:ih/24,scale=${W}:${H}:flags=neighbor`);
+  if (fx.includes('vignette') && !viaShader('vignette')) f.push('vignette=PI/4');
+  if (fx.includes('grain') && !viaShader('grain')) f.push('noise=alls=18:allf=t');
+  if (fx.includes('pixel') && !viaShader('pixel')) f.push(`scale=iw/24:ih/24,scale=${W}:${H}:flags=neighbor`);
   return f;
 }
 

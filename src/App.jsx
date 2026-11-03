@@ -20,6 +20,7 @@ import { clipStartTl, motionDataPinned, trackedClips } from './track.js';
 import { CROP_ASPECTS, aspectRatioOf, cropForAspect } from './cropMath.js';
 import { chromaOf, cropOf, transformOf } from './visual.js';
 import { isLookPatch, lookAction, selectedPictures } from './look.js';
+import { regroupSegments } from './subtitles.js';
 import { loadProjectLuts, onLutLoaded } from './fx/lut.js';
 import LeftPanel from './components/LeftPanel.jsx';
 import Preview from './components/Preview.jsx';
@@ -327,7 +328,7 @@ export default function App() {
     setPlaying(false);
     setCaptions((c) => ({ ...c, busy: true, error: null, stage: 'Preparing', progress: 0 }));
     const off = window.api.onCaptionsProgress(({ stage, progress }) => setCaptions((c) => ({ ...c, stage, progress })));
-    const { style, engine, ...engineOpts } = opts;
+    const { style, engine, wordsPerLine, ...engineOpts } = opts;
     // Cloud engines return the same segment shape, so everything after this call —
     // caption clips, styling, apply-to-all — is the one shared path.
     const res = engine === 'cloud'
@@ -335,7 +336,8 @@ export default function App() {
       : await window.api.runCaptions(project, engineOpts);
     off();
     if (res.ok) {
-      dispatch({ type: 'setCaptions', style, segments: res.segments.map((s) => ({ ...s, id: uid() })) });
+      // Words-per-line (when set) regroups the segments here, once, for every engine.
+      dispatch({ type: 'setCaptions', style, segments: regroupSegments(res.segments, wordsPerLine).map((s) => ({ ...s, id: uid() })) });
       if (engine === 'cloud') {
         setCaptions((c) => ({ ...c, busy: false }));
       } else {
@@ -391,17 +393,19 @@ export default function App() {
 
   // Drop from an asset panel onto the timeline (info: { lane, time, index, clipId } from Timeline).
   const applyToClip = (clipId, payload) => {
-    const clip = project.videoClips.find((c) => c.id === clipId);
+    const vClip = project.videoClips.find((c) => c.id === clipId);
+    const clip = vClip || (project.overlayClips || []).find((c) => c.id === clipId);
     if (!clip) return;
+    const track = vClip ? 'video' : 'overlay';
     let patch;
     if (payload.kind === 'filter') patch = { filter: payload.id };
     else if (payload.kind === 'effect') patch = { effects: clip.effects?.includes(payload.id) ? clip.effects : [...(clip.effects || []), payload.id] };
     else if (payload.kind === 'transition') {
-      if (project.videoClips[0].id === clipId) return; // no clip before the first one
+      if (!vClip || project.videoClips[0].id === clipId) return; // transitions live between main-track clips only
       patch = { transition: { type: payload.id, duration: payload.duration || 0.5 } };
     }
-    dispatch({ type: 'update', track: 'video', id: clipId, patch });
-    setSelection({ track: 'video', id: clipId });
+    dispatch({ type: 'update', track, id: clipId, patch });
+    setSelection({ track, id: clipId });
   };
 
   const dropItem = (payload, info) => {
@@ -673,9 +677,13 @@ export default function App() {
     : (selection?.items?.length === 2 && selection.items.some((i) => i.track === 'audio')
       && selection.items.some((i) => i.track === 'video' || i.track === 'overlay')) ? 'link' : null;
 
-  // Video clip targeted by the Effects / Filters / Transitions / Adjust tabs: selection first, else under the playhead.
+  // Picture clip targeted by the Effects / Filters / Transitions / Adjust tabs: selection first, else under the playhead.
+  // An overlay selection targets the overlay itself (tagged track: 'overlay'); the main-track
+  // fallbacks stay video-only, and Transitions simply finds no index on an overlay target.
   const layout = videoLayout(project.videoClips);
-  const target = (selection?.track === 'video' && layout.find((l) => l.clip.id === selection.id && !l.clip.gap))
+  const overlaySel = selection?.track === 'overlay' ? (project.overlayClips || []).find((c) => c.id === selection.id) : null;
+  const target = (overlaySel && { track: 'overlay', clip: overlaySel, start: overlaySel.start, end: overlaySel.start + freeLen('overlay', overlaySel) })
+    || (selection?.track === 'video' && layout.find((l) => l.clip.id === selection.id && !l.clip.gap))
     || (selection?.items && layout.find((l) => !l.clip.gap && selection.items.some((it) => it.track === 'video' && it.id === l.clip.id)))
     || videoClipAt(project, time);
   // With several clips selected, a filter or color change goes to all of them (one undo step).
@@ -683,7 +691,7 @@ export default function App() {
     if (!target) return;
     const many = selectedPictures(project, selection);
     if (many.length > 1 && isLookPatch(patch)) dispatch(lookAction(many, target.clip, patch));
-    else dispatch({ type: 'update', track: 'video', id: target.clip.id, patch });
+    else dispatch({ type: 'update', track: target.track || 'video', id: target.clip.id, patch });
   };
 
   const split = useCallback(() => {
