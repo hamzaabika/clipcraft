@@ -205,12 +205,12 @@ export default function TextInspector({ clip, dispatch, project = null }) {
           {S({ label: 'Size', value: st.size, min: 12, max: 260, step: 1, onChange: (size) => set({ size }) })}
           {S({ label: 'Letter spacing', value: st.letterSpacing, min: -5, max: 40, step: 1, onChange: (letterSpacing) => set({ letterSpacing }) })}
           {S({ label: 'Line height', value: st.lineHeight, min: 0.8, max: 2.5, step: 0.05, onChange: (lineHeight) => set({ lineHeight }) })}
-          {S({ label: 'Max width', value: st.maxWidth, min: 0.2, max: 1, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (maxWidth) => set({ maxWidth }) })}
+          {S({ label: 'Max width', value: st.maxWidth, min: 0.2, max: 1, numScale: 100, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (maxWidth) => set({ maxWidth }) })}
           </div>
           <div className="insp-card">
             <div className="insp-card-title">Fill</div>
             <Color label="Color" value={st.color} onChange={(color) => set({ color })} />
-            {S({ label: 'Opacity', value: st.opacity ?? 1, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (opacity) => set({ opacity }) })}
+            {S({ label: 'Opacity', value: st.opacity ?? 1, numScale: 100, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (opacity) => set({ opacity }) })}
           </div>
           {colorRoles.length > 0 && (
             <div className="insp-card">
@@ -261,8 +261,8 @@ export default function TextInspector({ clip, dispatch, project = null }) {
           <div className="insp-card">
             <div className="insp-card-title">Position & timing</div>
             <p className="dim small">Or drag the text on the player.</p>
-          {S({ label: 'Position X', value: st.x, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (x) => set({ x }) })}
-          {S({ label: 'Position Y', value: st.y, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (y) => set({ y }) })}
+          {S({ label: 'Position X', value: st.x, numScale: 100, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (x) => set({ x }) })}
+          {S({ label: 'Position Y', value: st.y, numScale: 100, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (y) => set({ y }) })}
           {S({ label: 'Rotation', value: st.rotation || 0, min: -180, max: 180, step: 1, fmt: (v) => `${Math.round(v)}°`, onChange: (rotation) => set({ rotation }) })}
           <NumBox layout="field" label="Start (s)" step={0.1} min={0} value={clip.start}
             onChange={(v) => set({ start: Math.max(0, v) })} />
