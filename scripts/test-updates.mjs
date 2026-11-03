@@ -20,28 +20,36 @@ eq(Math.sign(compare('garbage', '1.0.0')), 0, 'invalid parses to 0');
 const feed = (body, status = 200) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => body });
 
 // Newer version available, links gated to allowed hosts
-let r = await check(feed({ version: '1.1.0', download_url: 'https://hamzaabika.com/clipcraft/ClipCraft-1.1.0.deb', notes_url: 'https://github.com/x/y/releases', notes: 'New packs.', release_date: '2026-11-02', size: '180 MB' }));
+let r = await check(feed({ version: '1.1.0', download_url: 'https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/ClipCraft-1.1.0.deb', notes_url: 'https://github.com/x/y/releases', notes: 'New packs.', release_date: '2026-11-02', size: '180 MB' }));
 eq(r.newer, true, 'newer detected');
 eq(r.latest, '1.1.0', 'latest parsed');
-eq(r.downloadUrl, 'https://hamzaabika.com/clipcraft/ClipCraft-1.1.0.deb', 'download url kept');
+eq(r.downloadUrl, 'https://github.com/hamzaabika/clipcraft/releases/download/v1.1.0/ClipCraft-1.1.0.deb', 'download url kept');
 eq(r.notes, 'New packs.', 'notes kept');
 
-// Same version -> not newer
+// The feed itself is served from the ClipCraft site; its links are trusted too.
+r = await check(feed({ version: '1.1.0', download_url: 'https://clipcrafts.pages.dev/ClipCraft-1.1.0.deb' }));
+eq(r.downloadUrl, 'https://clipcrafts.pages.dev/ClipCraft-1.1.0.deb', 'site download url kept');
+
+// Same version -> not newer (the ONLY road to "up to date": a 200 feed answer, not newer)
 r = await check(feed({ version: '1.0.0', download_url: 'https://hamzaabika.com/x' }));
 eq(r.newer, false, 'same version not newer');
+eq(!!r.error, false, 'same version is not an error');
 
-// Untrusted download host -> falls back to the developer site, never the feed's host
+// Untrusted download host -> falls back to the ClipCraft site, never the feed's host
 r = await check(feed({ version: '9.9.9', download_url: 'https://evil.example/payload.exe' }));
-eq(r.downloadUrl, 'https://hamzaabika.com', 'untrusted host replaced');
+eq(r.downloadUrl, 'https://clipcrafts.pages.dev', 'untrusted host replaced');
 eq(r.notesUrl, '', 'untrusted notes dropped');
 
-// No feed published yet -> none (the UI reads this as up to date)
+// Honest states: a failed check is an error with its reason, NEVER "up to date".
+// (The old mapping 404 -> none -> green "You're up to date" hid a live 1.1.1 behind a 404.)
 r = await check(feed({}, 404));
-eq(r.none, true, '404 means no feed yet');
+eq(!!r.error, true, '404 surfaces as error');
+eq(/404/.test(r.error || ''), true, '404 reason is named');
+eq(r.none, undefined, 'no none state remains');
 
-// A host answering 200 with an HTML page (SPA fallback) is also "no feed yet", not an error
+// A host answering 200 with an HTML page (SPA fallback) is a failed check too, not a pass.
 r = await check(async () => ({ ok: true, status: 200, json: async () => { throw new Error('not json'); } }));
-eq(r.none, true, 'non-JSON 200 means no feed yet');
+eq(!!r.error, true, 'non-JSON 200 surfaces as error');
 
 // Server error and offline get honest error strings
 r = await check(feed({}, 500));

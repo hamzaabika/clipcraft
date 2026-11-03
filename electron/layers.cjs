@@ -104,16 +104,20 @@ function buildLayer(o, h) {
   const filters = [];
 
   // Fit the picture inside the frame (the frame itself is padded later so the mask and the transform see the whole frame).
-  // Crop first: the surviving region of the source TAKES THE PICTURE'S PLACE — it is scaled to the
-  // size the whole picture would have occupied (fw x fh from the uncropped fit), then the transform
-  // applies. The preview draws the same sub-rectangle stretched over the same box (Preview.jsx).
+  // Crop first: the surviving region of the source BECOMES the picture — it is contain-fitted
+  // at a uniform scale (fw x fh from the SURVIVING region's size), then the transform applies.
+  // It is never stretched to the uncropped fit box: that squashed the picture whenever a crop
+  // cut more on one axis than the other. The preview fits the same region the same way
+  // (Preview.jsx drawKeyed + src/pictureGeometry.js keptFitFactors).
   const mw = media.width || W;
   const mh = media.height || H;
   const crop = cropOf(clip);
   const cropped = hasCrop(clip);
-  const k = Math.min(W / mw, H / mh);
-  const fw = even(mw * k);
-  const fh = even(mh * k);
+  const kw = 1 - crop.l - crop.r;
+  const kh = 1 - crop.t - crop.b;
+  const k = Math.min(W / (mw * kw), H / (mh * kh));
+  const fw = even(mw * kw * k);
+  const fh = even(mh * kh * k);
   const cropFilter = cropped
     ? `crop=w='iw*${h.num(1 - crop.l - crop.r)}':h='ih*${h.num(1 - crop.t - crop.b)}':x='iw*${h.num(crop.l)}':y='ih*${h.num(crop.t)}'`
     : null;

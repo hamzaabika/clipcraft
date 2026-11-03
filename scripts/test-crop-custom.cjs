@@ -1,6 +1,7 @@
 // Crop % and Custom removal proofs, through the real export pipeline.
 // Crop: quadrant-coloured fixture; the exported frame must show exactly the surviving region,
-// fitted where the whole picture used to fit (preview uses the same sub-rectangle in drawKeyed).
+// contain-fitted as the picture at a UNIFORM scale (its true aspect — never stretched to the
+// uncropped fit box; the preview fits the same region the same way, Preview.jsx drawKeyed).
 // Custom removal: strokes rasterized by src/customMask.js itself (the renderer's own rasterizer),
 // handed to the export as the PNG the UI would send; erase removes, restore brings back, and a
 // painted removal unions with chroma key.
@@ -37,11 +38,24 @@ const pixel = (file, t, x, y) => [...execFileSync(ffmpegPath, ['-v', 'error', '-
   const BG = [0x20, 0x30, 0x40];
   const exp = async (name, p) => { const out = path.join(dir, `${name}.mp4`); await runExport(p, out, () => {}).promise; return out; };
 
-  // Crop left 25%: the frame now starts at the source's 25% line and stretches the rest.
+  // Crop left 25%: the surviving region (right 75%, 4:3) is contain-fitted — displayed
+  // 240x180 centred, so the frame's outer 40 px on each side stay background and NOTHING
+  // is stretched: a pixel's colour is the source colour at the matching fraction.
   let out = await exp('crop-l25', proj({ crop: { l: 0.25, t: 0, r: 0, b: 0 } }));
-  near(pixel(out, 1, 8, 45), [255, 0, 0], 30, 'crop l25: left edge is the colour at 25% across (red TL)');
+  near(pixel(out, 1, 8, 45), BG, 25, 'crop l25: left band is background (no stretch to the edge)');
+  near(pixel(out, 1, 48, 45), [255, 0, 0], 30, 'crop l25: region starts at the source 25% line (red TL)');
   near(pixel(out, 1, 160, 45), [0, 192, 0], 40, 'crop l25: centre moved into the TR quadrant (green)');
-  near(pixel(out, 1, 312, 135), [0, 0, 255], 30, 'crop l25: bottom-right still blue');
+  near(pixel(out, 1, 272, 135), [0, 0, 255], 30, 'crop l25: inside bottom-right is blue');
+  near(pixel(out, 1, 312, 135), BG, 25, 'crop l25: right band is background');
+
+  // Crop top 50% ONLY: the surviving bottom half (32:9) must keep its aspect — displayed
+  // 320x90 centred vertically (y 45..135) with background above and below. The old
+  // stretch-to-fit would have filled the whole height with the bottom half.
+  out = await exp('crop-t50', proj({ crop: { l: 0, t: 0.5, r: 0, b: 0 } }));
+  near(pixel(out, 1, 160, 10), BG, 25, 'crop t50: top band is background (no vertical stretch)');
+  near(pixel(out, 1, 160, 170), BG, 25, 'crop t50: bottom band is background');
+  near(pixel(out, 1, 80, 90), [255, 255, 255], 30, 'crop t50: centre-left is the BL quadrant (white)');
+  near(pixel(out, 1, 240, 90), [0, 0, 255], 30, 'crop t50: centre-right is the BR quadrant (blue)');
 
   // Asymmetric crop: left half + top half away -> only the BR (blue) quadrant remains, full frame.
   out = await exp('crop-l50t50', proj({ crop: { l: 0.5, t: 0.5, r: 0, b: 0 } }));

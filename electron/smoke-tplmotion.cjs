@@ -26,13 +26,13 @@ module.exports = async function tplmotionSmoke(win, dir, result) {
 
   win.setContentSize(1440, 900);
   await wait(800);
-  // Fresh smoke profile: dismiss the onboarding tour and the pack prompt if they show.
+  // Fresh smoke profile: dismiss the onboarding tour and the Welcome card if they show.
   await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Skip tour'); if (b) b.click(); return !!b; })()`).catch(() => {});
   await wait(400);
   at('enter-editor');
   await q(`document.querySelector('[aria-label="New 16:9 project"]').click()`);
   await wait(600);
-  await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start Editing'); if (b) b.click(); return !!b; })()`).catch(() => {});
+  await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
   await wait(400);
   at('load');
   await q(`window.__fve.load(${fs.readFileSync(path.join(dir, 'project.json'), 'utf8')})`);

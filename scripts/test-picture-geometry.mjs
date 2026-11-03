@@ -58,4 +58,29 @@ for (const t of [
   const tl = stageToSource(g, 0, 0);
   near(tl.x, 0); near(tl.y, 0);
 }
+// Crop: the box is the CONTAIN FIT of the surviving region (uniform scale — the region
+// keeps its true aspect, it is never stretched to the uncropped fit box), and stage <->
+// source mapping lands inside the surviving region. 1920x1080 source, crop l .25 / t .5:
+// surviving region 1440x540 (8:3) fits the 16:9 frame at fx = 1, fy = 2/3.
+{
+  const cropped = { transform: { scale: 1, scaleX: 1, scaleY: 1, uniform: true, x: 0, y: 0, rot: 0 }, effects: [], crop: { l: 0.25, t: 0.5, r: 0, b: 0 } };
+  const g = pictureGeometry(proj, { width: 1920, height: 1080 }, cropped);
+  near(g.fx, 1, 1e-12); near(g.fy, 2 / 3, 1e-12);
+  // The box's centre is the surviving region's centre in source fractions.
+  const c = stageToSource(g, g.cx, g.cy);
+  near(c.x, 0.625, 1e-9); near(c.y, 0.75, 1e-9);
+  // The box's corners are the surviving region's corners.
+  const tl = sourceToStage(g, 0.25, 0.5);
+  near(tl.x, g.cx - g.w / 2, 1e-9); near(tl.y, g.cy - g.h / 2, 1e-9);
+  const brc = sourceToStage(g, 1, 1);
+  near(brc.x, g.cx + g.w / 2, 1e-9); near(brc.y, g.cy + g.h / 2, 1e-9);
+  // Round-trip with crop + rotation + flip.
+  const g2 = pictureGeometry(proj, { width: 1920, height: 1080 },
+    { transform: { scale: 0.8, scaleX: 1, scaleY: 1, uniform: true, x: 0.05, y: 0, rot: 30 }, effects: ['mirror'], crop: { l: 0.1, t: 0.2, r: 0.3, b: 0.1 } });
+  for (const [sx, sy] of [[0.3, 0.4], [0.62, 0.77]]) {
+    const s = stageToSource(g2, sx, sy);
+    const back = sourceToStage(g2, s.x, s.y);
+    near(back.x, sx, 1e-9); near(back.y, sy, 1e-9);
+  }
+}
 console.log('PICTURE-GEOMETRY OK');

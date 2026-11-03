@@ -101,13 +101,10 @@ function readLibrary(root) {
 }
 
 // The library the panels should show. Rule: the user's own assets folder wins — if it
-// holds a library.json (hand-placed or installed by a pack download), that is the library,
-// exactly as before. Only when the user folder has NO library does a bundled pack (test
-// builds) become the read source, read in place (never copied). Writes never go to the
-// bundle: pack installs keep targeting assetsRoot() via the pack:install handler, and
-// once an install lands a library.json in the user folder it takes over reads too. The
-// result gains `bundled: true` in the fallback case so the UI can say where the pack came
-// from and the first-run pack prompt can stay out of the way.
+// holds a library.json (hand-placed), that is the library, exactly as before. Only when
+// the user folder has NO library does a bundled library (test builds) become the read
+// source, read in place (never copied). Writes never go to the bundle. The result gains
+// `bundled: true` in the fallback case so the UI can say where the library came from.
 function readLibraryFor(userDataDir, env = process.env, resourcesPath = process.resourcesPath) {
   const root = assetsRoot(userDataDir, env);
   const lib = readLibrary(root);

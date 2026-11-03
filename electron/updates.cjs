@@ -1,8 +1,15 @@
 // "Is there a newer ClipCraft?" — the user asks, the app answers. A check happens ONLY when the
 // user clicks "Check for updates" in About (nothing runs automatically at startup). The app asks
-// Hamza's update feed (a small JSON file he publishes next to the installer) and compares versions.
-// Nothing is sent but the request; nothing downloads or installs itself: a newer version only offers
-// a Download button that opens the link from the feed in the user's browser.
+// the update feed — a small JSON file published on the ClipCraft site (clipcrafts.pages.dev) —
+// and compares versions. Nothing is sent but the request. When a newer version exists, About
+// offers an IN-APP download with progress (downloadInstaller below, streamed to the user's
+// Downloads folder); nothing installs itself — afterwards the user explicitly clicks
+// "Open installer" and their system installer applies the update. Installing replaces only the
+// app's own program files: projects, recents and settings live in the app's userData folder,
+// which an install-over never touches, so an update loses nothing.
+// Honest states: "up to date" is reported ONLY after a 200 answer whose version is not newer.
+// Any other outcome (404, 500, offline, a non-feed answer) is an error with its reason — never
+// silently dressed up as "up to date".
 let app, net;
 try {
   ({ app, net } = require('electron'));
@@ -12,11 +19,12 @@ try {
   net = { fetch: (...args) => fetch(...args) };
 }
 
-const SITE = 'https://hamzaabika.com';
-const ENDPOINT = process.env.CLIPCRAFT_UPDATE_URL || process.env.FVE_UPDATE_URL || `${SITE}/clipcraft/version.json`;
-// Hosts a feed link may point at: Hamza's own site, or GitHub (release downloads / notes).
-// A local CLIPCRAFT_UPDATE_URL override (development/testing only) also trusts localhost.
-const LINK_HOSTS = ['hamzaabika.com', 'www.hamzaabika.com', 'github.com'];
+const SITE = 'https://clipcrafts.pages.dev';
+const ENDPOINT = process.env.CLIPCRAFT_UPDATE_URL || process.env.FVE_UPDATE_URL || `${SITE}/version.json`;
+// Hosts a feed link may point at: the ClipCraft site, Hamza's own site, or GitHub (release
+// downloads / notes). A local CLIPCRAFT_UPDATE_URL override (development/testing only) also
+// trusts localhost.
+const LINK_HOSTS = ['clipcrafts.pages.dev', 'hamzaabika.com', 'www.hamzaabika.com', 'github.com'];
 if (process.env.CLIPCRAFT_UPDATE_URL) LINK_HOSTS.push('127.0.0.1', 'localhost');
 
 const fs = require('node:fs');
@@ -105,18 +113,19 @@ const safeLink = (url, hosts) => {
   }
 };
 
-// { current, latest, newer, downloadUrl, notesUrl, notes, releaseDate, size }
-// or { current, none: true } when no feed is published yet (404), or { current, error }.
+// { current, latest, newer, downloadUrl, notesUrl, notes, releaseDate, size } on a valid feed
+// answer, or { current, error } for ANY failure to check (non-200, offline, non-feed body).
+// There is deliberately no "none" state: a check that did not succeed must never be shown as
+// "up to date" (that is exactly the lie the old 404 -> none mapping told).
 async function check(fetchImpl = net.fetch) {
   const current = app.getVersion();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
     const res = await fetchImpl(`${ENDPOINT}${ENDPOINT.includes('?') ? '&' : '?'}platform=${process.platform}`, { signal: ctrl.signal, credentials: 'omit', cache: 'no-store' });
-    if (res.status === 404) return { current, none: true };
-    if (!res.ok) return { current, error: `The update server answered ${res.status}.` };
+    if (!res.ok) return { current, error: `Couldn't check for updates — the update server answered ${res.status}.` };
     let r;
-    try { r = await res.json(); } catch { return { current, none: true }; } // an HTML page instead of a feed = nothing published yet
+    try { r = await res.json(); } catch { return { current, error: 'Couldn\'t check for updates — the update feed did not answer with a valid feed.' }; }
     const latest = parse(r.version) ? String(r.version) : '';
     if (!latest) return { current, error: 'The update feed did not contain a valid version.' };
     return {
@@ -130,7 +139,7 @@ async function check(fetchImpl = net.fetch) {
       size: typeof r.size === 'string' ? r.size : '',
     };
   } catch {
-    return { current, error: 'No internet connection, or the update server could not be reached.' };
+    return { current, error: 'Couldn\'t check for updates — No internet connection, or the update server could not be reached.' };
   } finally {
     clearTimeout(timer);
   }

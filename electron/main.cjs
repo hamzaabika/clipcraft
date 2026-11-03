@@ -788,10 +788,10 @@ ipcMain.handle('settings:saveServiceKey', (_e, name, key) => {
 ipcMain.handle('settings:clearServiceKey', (_e, name) => settings.clearServiceKey(name));
 
 // ---- About and updates: the version, and (only when the user asks in About) whether the
-// update feed on hamzaabika.com has a newer one — see updates.cjs. ----
+// update feed on clipcrafts.pages.dev has a newer one — see updates.cjs. ----
 const updates = require('./updates.cjs');
 ipcMain.handle('app:version', () => app.getVersion());
-// auto: the check at startup. UI tests never reach the real site.
+// Manual checks only (the About dialog); nothing checks automatically at startup.
 ipcMain.handle('updates:check', async () => { lastCheck = await updates.check(); return lastCheck; });
 let lastCheck = null;
 // In-app installer download (progress streamed to the requesting window). Uses ONLY the
@@ -948,25 +948,11 @@ ipcMain.handle('assets:list', () => {
   return assets.readLibraryFor(app.getPath('userData'), process.env, process.resourcesPath);
 });
 
-// ---- First run: the onboarding tour and the Creator Pack prompt, each shown once
-// (flags in settings.json — electron/settings.cjs). ----
+// ---- First run: the Welcome card, shown once (flags in settings.json —
+// electron/settings.cjs). ----
 ipcMain.handle('firstrun:get', () => settings.getFirstRun());
 ipcMain.handle('firstrun:set', (_e, patch) => settings.setFirstRun(patch));
 
-// ---- Creator Pack downloads: the optional free content pack (electron/pack.cjs). The
-// renderer only names categories; URLs come from the pack feed in the main process. ----
-const pack = require('./pack.cjs');
-ipcMain.handle('pack:manifest', async () => pack.fetchManifest());
-ipcMain.handle('pack:install', async (e, cats) => {
-  const root = assets.assetsRoot(app.getPath('userData'), process.env);
-  assets.ensureRoot(root);
-  return pack.startInstall({
-    categories: Array.isArray(cats) ? cats : [],
-    root,
-    onProgress: (p) => { if (!e.sender.isDestroyed()) e.sender.send('pack:progress', p); },
-  });
-});
-ipcMain.handle('pack:cancel', () => pack.cancelInstall());
 // My avatars: photos of people reused in every project (<userData>/avatars).
 const avatarDir = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'avatars-test') : path.join(app.getPath('userData'), 'avatars'));
 ipcMain.handle('avatars:list', () => gen.avatarList(avatarDir()));

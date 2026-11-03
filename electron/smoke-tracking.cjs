@@ -19,14 +19,14 @@ module.exports = async function trackingSmoke(win, dir, result) {
   const shot = async (name) => fs.writeFileSync(path.join(dir, name), (await win.capturePage()).toPNG());
 
   win.setContentSize(1440, 900);
-  // First-run surfaces (the onboarding tour on Home, the Creator Pack prompt in the editor) must not
+  // First-run surfaces (the onboarding tour on Home, the Welcome card in the editor) must not
   // sit between the test and the editor; dismiss them whenever they are up.
   const dismissFirstRun = () => q(`(() => {
     const btns = [...document.querySelectorAll('button')];
     const skip = btns.find((b) => /skip tour/i.test(b.textContent));
     if (skip) { skip.click(); return 'tour'; }
-    const start = btns.find((b) => b.textContent.trim() === 'Start Editing');
-    if (start) { start.click(); return 'pack'; }
+    const start = btns.find((b) => b.textContent.trim() === 'Start creating');
+    if (start) { start.click(); return 'welcome'; }
     return null;
   })()`);
   await until(`!!document.querySelector('[aria-label="New 16:9 project"]')`, 60, 500);
@@ -44,13 +44,13 @@ module.exports = async function trackingSmoke(win, dir, result) {
   await q(`[...document.querySelectorAll('aside.inspector button')].find((b) => b.textContent.trim().startsWith('Track motion')).click()`);
   result.pickMode = await until(`!!document.querySelector('.track-pick')`, 20, 250);
 
-  // The Creator Pack prompt can mount a moment after the editor settles, and its modal backdrop
+  // The Welcome card can mount a moment after the editor settles, and its modal backdrop
   // covers the stage: keep dismissing first-run surfaces until the stage itself is the top element.
   const clearStage = async () => {
     for (let i = 0; i < 24; i++) {
       const state = await q(`(() => {
         const btns = [...document.querySelectorAll('button')];
-        const b = btns.find((x) => x.textContent.trim() === 'Start Editing') || btns.find((x) => /skip tour/i.test(x.textContent));
+        const b = btns.find((x) => x.textContent.trim() === 'Start creating') || btns.find((x) => /skip tour/i.test(x.textContent));
         if (b) { b.click(); return 'clicked'; }
         const el = document.querySelector('.track-pick') || document.querySelector('.stage');
         if (!el) return 'no-stage';
