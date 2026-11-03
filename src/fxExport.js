@@ -2,7 +2,7 @@
 // FFmpeg (electron/fxjobs.cjs), drawn here with the preview's WebGL shaders, and stored for the final export.
 import { videoLayout } from './store.js';
 import { FX_TRANSITIONS } from './fx/catalog.js';
-import { clipHasPixelFx, isPixel, pixelPasses } from './fx/apply.js';
+import { clipHasPixelFx, isPixel, isShaderFx, pixelPasses } from './fx/apply.js';
 import { fxGL } from './fx/gl.js';
 import { easeValue } from './fx/easing.js';
 
@@ -66,8 +66,9 @@ export async function renderFxPass(projectIn, onProgress, isCanceled) {
     return true;
   };
   for (const j of fxClipsOf(projectIn)) if (!(await run(j))) return null;
-  // Effects on the Effects track are now inside the clips' pictures.
-  project = { ...project, effectClips: (project.effectClips || []).filter((e) => !isPixel(e.fx)) };
+  // Effects on the Effects track are now inside the clips' pictures (shader effects and the
+  // classic effects' shader forms alike); particle/light overlays stay for their own pass.
+  project = { ...project, effectClips: (project.effectClips || []).filter((e) => !isShaderFx(e.fx)) };
 
   // 2) Animated transitions, from the clips as they now look.
   for (const l of videoLayout(project.videoClips)) {

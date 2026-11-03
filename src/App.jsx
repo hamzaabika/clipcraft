@@ -100,9 +100,7 @@ export default function App() {
   // only. tourSeen stays null until the persisted flags load, so a fast first click
   // can't slip past it either way.
   const [tourSeen, setTourSeen] = useState(null);
-  // The Creator Pack prompt is GONE (Hamza, 2026-11-02: the pack is forgotten,
-  // it must never appear). The first-run flow is the Welcome card only — nothing
-  // chains after it. The pack machinery stays dormant in the main process.
+  // The first-run flow is the Welcome card only — nothing chains after it.
   useEffect(() => {
     let alive = true;
     Promise.resolve(window.api.firstRunGet?.()).then((f) => {
@@ -653,6 +651,15 @@ export default function App() {
   const addText = (patch = {}) => {
     const clipId = uid();
     dispatch({ type: 'addText', clipId, at: time, patch });
+    setSelection({ track: 'text', id: clipId });
+  };
+
+  // "Add text" from an effect's panel: a text clip spanning exactly the clip / effect range
+  // it was invoked from, selected so its inspector opens ready to type. Same addText action
+  // and selection flow as the Text tab — no parallel text path.
+  const addTextOver = (start, duration) => {
+    const clipId = uid();
+    dispatch({ type: 'addText', clipId, at: start, patch: { duration } });
     setSelection({ track: 'text', id: clipId });
   };
 
@@ -1757,7 +1764,7 @@ export default function App() {
         <LeftPanel tab={tab} setTab={setTab} media={project.media} dispatch={dispatch}
           onImport={importMedia} onAdd={addToTimeline} onAddAsOverlay={addAsOverlay} onLibraryAdd={libraryAdd} onStockAdd={stockAdd} onAddFile={addFile} stockKey={stockKey} onTtsAdd={ttsAdd} selectedText={selectedText} onOpenSettings={() => setSettingsOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)} onRemoveMedia={removeMedia} onPeek={peek} peekId={peekId} onPeekAsset={peekAsset}
-          recorder={recorder} onStartRecord={() => recorder.start(time)} onAddText={addText}
+          recorder={recorder} onStartRecord={() => recorder.start(time)} onAddText={addText} onAddTextOver={addTextOver}
           onRecordScreen={() => { setPlaying(false); setScreenOpen(true); }}
           target={target} updateTarget={updateTarget} selectedCount={selectedPictures(project, selection).length}
           onApplyLookToAll={(clip) => dispatch({ type: 'updateMany', updates: [
@@ -1777,6 +1784,7 @@ export default function App() {
           cropEdit={cropEdit} onCropDraft={setCropDraft}
           colorPick={colorPick} onColorPicked={finishColorPick} />
         <Inspector project={project} selection={selection} dispatch={dispatch} duration={duration} time={time} onSeek={seek}
+          onAddTextOver={addTextOver}
           onEnhance={(strength) => selection && enhanceClip({ track: selection.track, id: selection.id }, strength)}
           onTrackPick={(sel) => startTrackPick(sel)} onCropEdit={(sel) => startCropEdit(sel)} onColorPick={(sel) => startColorPick(sel)} />
         <Splitter which="left" style={{ left: panes.left }} onStart={startResize} onReset={resetSize} onNudge={nudgeSize} label="Resize the left panel" />

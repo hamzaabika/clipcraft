@@ -289,10 +289,12 @@ function reduceProjectInner(p, a) {
       };
     }
     case 'addOverlayClip': {
-      // Picture-in-picture: a video or photo above the main track, half size in the lower right by default.
+      // Picture-in-picture: a video or photo above the main track, centred on the canvas at
+      // half size by default (Hamza, 2026-11-03: a new overlay lands in the middle, never
+      // dropped over a corner). x/y are frame fractions from the centre, so 0/0 is centred.
       const m = p.media.find((x) => x.id === a.mediaId);
       if (!m || m.type === 'audio') return p;
-      const clip = { ...newVideoClip(a.clipId, m), start: Math.max(0, a.at), transform: { scale: 0.5, x: 0.22, y: 0.22 }, ...(a.layer != null && { layer: a.layer }) };
+      const clip = { ...newVideoClip(a.clipId, m), start: Math.max(0, a.at), transform: { scale: 0.5, x: 0, y: 0 }, ...(a.layer != null && { layer: a.layer }) };
       return { ...p, overlayClips: [...p.overlayClips, clip] };
     }
     case 'addEffectClip':
@@ -523,7 +525,12 @@ function reduceProjectInner(p, a) {
       const { track, clipId, fx } = parseEffectKey(a.id);
       const key = TRACKS[track];
       if (!key) return p;
-      return { ...p, [key]: p[key].map((c) => (c.id === clipId ? { ...c, effects: (c.effects || []).filter((e) => e !== fx) } : c)) };
+      return { ...p, [key]: p[key].map((c) => {
+        if (c.id !== clipId) return c;
+        const fxRegions = { ...(c.fxRegions || {}) };
+        delete fxRegions[fx]; // the region belongs to the effect instance; it goes with it
+        return { ...c, effects: (c.effects || []).filter((e) => e !== fx), fxRegions };
+      }) };
     }
     case 'split':
       return splitLinked(p, a.track, a.id, a.t, a.newId);

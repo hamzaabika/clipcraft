@@ -862,6 +862,9 @@ input.switch:checked::after { transform: translateX(16px); }
 
 /* Player: move / scale / rotate box */
 .tbox-layer { position: absolute; inset: 0; z-index: 6; }
+.fx-region { position: absolute; z-index: 6; border: 1.5px dashed #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(0, 0, 0, .25); cursor: move; touch-action: none; }
+.fx-region.ellipse { border-radius: 50%; }
+.fx-region-handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; background: #fff; border: 2px solid #7c3aed; border-radius: 4px; cursor: nwse-resize; }
 
 /* Font picker: names drawn in their own font, search, groups, favorites, your fonts */
 .font-picker { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -2372,45 +2375,7 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .paypal-mark { height: 15px; width: auto; display: block; }
 .home-paypal-mark { height: 21px; width: auto; display: block; }
 
-/* ---- First run: Creator Pack prompt + standing offers ---- */
-.pack-backdrop { z-index: 80; }
-.modal.pack-prompt { width: 580px; max-width: calc(100vw - 40px); padding: 26px 28px 20px; text-align: left; }
-.pack-icon { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 12px;
-  background: var(--primary-soft); color: var(--focus); margin-bottom: 10px; }
-.pack-prompt h3 { margin: 0 0 6px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
-.pack-sub { margin: 0 0 14px; color: var(--text-2); font-size: 12.5px; line-height: 1.55; }
-.pack-status { display: flex; align-items: center; gap: 7px; color: var(--text-2); font-size: 12.5px; margin: 6px 0; }
-.pack-status.warn { color: var(--warning); }
-.pack-picker { display: flex; flex-direction: column; gap: 7px; margin: 4px 0 6px; }
-.pack-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); }
-.pack-row:hover { border-color: var(--border-strong); }
-.pack-row.off { opacity: 0.55; cursor: default; }
-.pack-row input { accent-color: var(--primary); width: 15px; height: 15px; flex: none; }
-.pack-row-main { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.pack-row-main b { font-size: 13px; font-weight: 600; }
-.pack-row-main span { color: var(--text-3); font-size: 11.5px; }
-.pack-row-size { color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
-.pack-progress { display: flex; flex-direction: column; gap: 9px; margin: 6px 0 4px; }
-.pack-prow { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
-.pack-prow-label { width: 74px; flex: none; font-weight: 600; }
-.pack-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-4); overflow: hidden; }
-.pack-bar > div { height: 100%; background: linear-gradient(90deg, var(--primary-2), var(--primary)); border-radius: 3px; transition: width 150ms linear; }
-.pack-prow-state { color: var(--text-2); font-size: 12px; display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
-.pack-prow-state.ok { color: var(--success); }
-.pack-prow-state.error { color: var(--danger); }
-.pack-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
-.pack-actions-spacer { flex: 1; }
-.pack-note { margin: 10px 0 0; color: var(--text-3); font-size: 11.5px; }
-.pack-offer { display: flex; flex-direction: column; gap: 6px; align-self: stretch; padding: 10px 12px;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); }
-.pack-offer-head { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); }
-.pack-offer-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
-.pack-offer-label { flex: 1; min-width: 0; }
-.pack-offer-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; }
-.pack-offer-state.ok { color: var(--success); }
+/* ---- Asset library lists ---- */
 .assets-pack-more { padding: 4px 2px 8px; display: flex; flex-direction: column; gap: 6px; }
 .about-tour { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
 .pack-music-offer { display: flex; flex-direction: column; gap: 6px; }
-.pack-actions { flex-wrap: wrap; row-gap: 10px; }
-.pack-actions .btn { flex: none; }
