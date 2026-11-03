@@ -4,7 +4,9 @@ import { DEV_INSTAGRAM_URL } from './HomeScreen.jsx';
 
 // About ClipCraft — version, the developer (Hamza Abika), his links, and a manual update
 // check: nothing is checked automatically; the user clicks "Check for updates" and decides.
-// The check asks the update feed on hamzaabika.com (see electron/updates.cjs).
+// The check asks the update feed on clipcrafts.pages.dev (see electron/updates.cjs). A failed
+// check shows its reason as an error — "You're up to date" appears only after a successful
+// check whose latest version is not newer than the installed one.
 const DEV_SITE_URL = 'https://hamzaabika.com';
 
 export function AboutDialog({ onClose, onWelcome }) {
@@ -100,7 +102,7 @@ export function AboutDialog({ onClose, onWelcome }) {
             </div>
           )}
           {check && !check.newer && !check.error && (
-            <span className="about-status ok"><CheckCircle2 size={15} /> You're up to date{check.none ? ' — no newer version has been published yet.' : ` — ${check.latest} is the latest version.`}</span>
+            <span className="about-status ok"><CheckCircle2 size={15} /> You're up to date — {check.latest} is the latest version.</span>
           )}
           {check && check.error && (
             <span className="about-status error"><WifiOff size={15} /> {check.error} <button className="btn btn-ghost btn-sm" onClick={runCheck}>Try again</button></span>

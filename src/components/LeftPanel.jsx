@@ -344,7 +344,7 @@ function NeedClip({ target }) {
   return <p className="hint">Select a video clip in the timeline, or drag an item onto a clip.</p>;
 }
 
-function EffectsTab({ target, updateTarget, clipSelected, onAddFreeEffect }) {
+function EffectsTab({ target, updateTarget, clipSelected, onAddFreeEffect, onAddTextOver }) {
   const [query, setQuery] = useState('');
   const fx = clipSelected ? target?.clip.effects || [] : [];
   const toggle = (id) => updateTarget({ effects: fx.includes(id) ? fx.filter((x) => x !== id) : [...fx, id] });
@@ -360,6 +360,11 @@ function EffectsTab({ target, updateTarget, clipSelected, onAddFreeEffect }) {
       <p className="hint fx-mode">{clipSelected
         ? 'On the selected clip: the effect lasts the whole clip. Click an empty spot of the timeline to add free effects instead.'
         : 'On the Effects track: move it and stretch it over any part of the video. Select a clip first to put the effect on that clip.'}</p>
+      {clipSelected && target && onAddTextOver && (
+        <div className="pad-x">
+          <button className="btn btn-sm" onClick={() => onAddTextOver(target.start, Math.max(0.1, target.end - target.start))}><Type size={14} /> Add text over this clip</button>
+        </div>
+      )}
       {!groups.length && <p className="hint pad-x">No effects match that search.</p>}
       {groups.map(([g, list]) => (
         <div key={g} className="fx-group">

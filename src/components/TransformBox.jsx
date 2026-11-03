@@ -15,8 +15,8 @@ import { resolveStyle, textBox, textVisible } from '../text/render.js';
 const SNAP_PX = 6;
 
 // The clip's displayed picture box comes from src/pictureGeometry.js — the same geometry
-// the crop overlay and the colour sampler use. (A cropped clip's surviving region takes
-// this same box, so the box does not change with the crop.)
+// the crop overlay and the colour sampler use. (For a cropped clip the box is the fitted
+// box of the crop's surviving region, which is what the renderer shows.)
 
 export default function TransformBox({ project, time, selection, onSelect, dispatch, sw, sh }) {
   const [guides, setGuides] = useState({ x: false, y: false });

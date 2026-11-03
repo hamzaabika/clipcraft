@@ -74,10 +74,14 @@ export default function CustomMaskEditor({ clip, media, onClose, onSave }) {
     setStrokes((prev) => [...prev, s]);
   };
   const move = (e) => {
-    if (!drawing.current) return;
+    const s = drawing.current;
+    if (!s) return;
     const p = norm(e);
-    drawing.current.points.push(p);
-    setStrokes((prev) => [...prev.slice(0, -1), { ...drawing.current, points: [...drawing.current.points] }]);
+    s.points.push(p);
+    // Snapshot NOW: the updater runs later, and by then the pointer may already be up
+    // (up() nulls drawing.current) — reading the ref inside the updater crashed the app.
+    const snapshot = { ...s, points: [...s.points] };
+    setStrokes((prev) => [...prev.slice(0, -1), snapshot]);
   };
   const up = () => { drawing.current = null; };
 

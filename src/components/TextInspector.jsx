@@ -133,6 +133,28 @@ export default function TextInspector({ clip, dispatch, project = null }) {
   };
   const nested = (key) => (p) => set({ [key]: { ...st[key], ...p } });
   const S = (p) => <Slider dispatch={dispatch} {...p} />;
+  // The colour roles the clip's style actually paints with, derived from the resolved style
+  // (so every template — captions, titles, labels — gets exactly its own roles, no more).
+  // They used to be scattered: the word box colour lived only in the Animation tab, the
+  // bubble colour only in the Bubble tab, the second/glow colours only in the Effects tab —
+  // a user recolouring a template (e.g. the Word Box violet box) could not find them. The
+  // swatches below write the very same clip fields those tabs write, through set()/nested(),
+  // so the one renderer (preview + export) honours them and caption sharing still applies.
+  const colorRoles = [];
+  if (st.highlight.mode !== 'none') {
+    colorRoles.push(<Color key="hl-color" label="Word color" value={st.highlight.color} onChange={(color) => nested('highlight')({ color })} />);
+    if (st.highlight.mode === 'box' || st.highlight.mode === 'marker') {
+      colorRoles.push(<Color key="hl-bg" label="Box color" value={st.highlight.bg} onChange={(bgc) => nested('highlight')({ bg: bgc })} />);
+    }
+  }
+  if (st.bg.on) colorRoles.push(<Color key="bg" label="Background color" value={st.bg.color} onChange={(color) => nested('bg')({ color })} />);
+  if (st.bubble && st.bubble !== 'none') colorRoles.push(<Color key="bubble" label="Bubble color" value={st.bubbleColor} onChange={(bubbleColor) => set({ bubbleColor })} />);
+  if (['gradient', 'fire', 'ice', 'shadow3d', 'retro', 'double'].includes(st.effect)) {
+    colorRoles.push(<Color key="color2" label="Second color" value={st.color2} onChange={(color2) => set({ color2 })} />);
+  }
+  if (['neon', 'glow', 'fire', 'ice'].includes(st.effect)) {
+    colorRoles.push(<Color key="glow" label="Glow color" value={st.glowColor} onChange={(glowColor) => set({ glowColor })} />);
+  }
   // Stable style objects for the tiles (style + one changed key).
   const styleWith = (key, val) => ({ ...stylePatch(st), [key]: val, caption: clip.caption });
   const animStyle = (kind) => (id) => {    const base = { ...stylePatch(st), animIn: { id: 'none', dur: 0.5 }, animOut: { id: 'none', dur: 0.4 }, animLoop: { id: 'none', speed: 1 } };
@@ -190,6 +212,12 @@ export default function TextInspector({ clip, dispatch, project = null }) {
             <Color label="Color" value={st.color} onChange={(color) => set({ color })} />
             {S({ label: 'Opacity', value: st.opacity ?? 1, fmt: (v) => `${Math.round(v * 100)}%`, onChange: (opacity) => set({ opacity }) })}
           </div>
+          {colorRoles.length > 0 && (
+            <div className="insp-card">
+              <div className="insp-card-title">Style colors</div>
+              {colorRoles}
+            </div>
+          )}
           <div className="insp-card">
             <div className="insp-card-title">Stroke</div>
           {S({ label: 'Width', value: st.stroke.width, min: 0, max: 30, step: 1, onChange: (width) => nested('stroke')({ width }) })}

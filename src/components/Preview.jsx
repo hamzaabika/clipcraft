@@ -26,11 +26,63 @@ export function drawFxOverlays(ctx, project, t, W, H) {
   drawOverlayPasses(ctx, project, t, W, H);
 }
 
+// ---- Effect region outline: the selected effect's region as a draggable dashed box ----
+// Resolves the selected effect instance (Effects-track clip, or an effect attached to a clip)
+// to its region + the store write for it; null when the selection has no region to show.
+export function regionTarget(project, selection) {
+  if (selection?.track !== 'effect' || !selection.id) return null;
+  if (!selection.id.includes('|')) {
+    const c = (project.effectClips || []).find((x) => x.id === selection.id);
+    return c?.region ? { region: c.region, write: (dispatch, region) => dispatch({ type: 'update', track: 'effect', id: c.id, patch: { region } }) } : null;
+  }
+  const [track, clipId, fx] = selection.id.split('|');
+  const clip = (track === 'overlay' ? project.overlayClips || [] : project.videoClips || []).find((c) => c.id === clipId);
+  const region = clip?.fxRegions?.[fx];
+  return region ? { region, write: (dispatch, r) => dispatch({ type: 'update', track, id: clipId, patch: { fxRegions: { ...(clip.fxRegions || {}), [fx]: r } } }) } : null;
+}
+
+const clamp01 = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+export function RegionOverlay({ region, write, dispatch }) {
+  const ref = useRef(null);
+  const startDrag = (mode) => (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const box = ref.current?.parentElement?.getBoundingClientRect();
+    if (!box) return;
+    const o = { ...region };
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    dispatch({ type: 'beginGesture' });
+    const move = (ev) => {
+      const dx = (ev.clientX - x0) / box.width;
+      const dy = (ev.clientY - y0) / box.height;
+      if (mode === 'move') write(dispatch, { ...o, x: clamp01(o.x + dx, 0, 1 - o.w), y: clamp01(o.y + dy, 0, 1 - o.h) });
+      else write(dispatch, { ...o, w: clamp01(o.w + dx, 0.05, 1 - o.x), h: clamp01(o.h + dy, 0.05, 1 - o.y) });
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      dispatch({ type: 'endGesture' });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  return (
+    <div ref={ref} className={`fx-region ${region.shape === 'ellipse' ? 'ellipse' : ''}`} role="presentation"
+      style={{ left: `${region.x * 100}%`, top: `${region.y * 100}%`, width: `${region.w * 100}%`, height: `${region.h * 100}%` }}
+      onPointerDown={startDrag('move')}>
+      <div className="fx-region-handle" onPointerDown={startDrag('size')} />
+    </div>
+  );
+}
+
 // Draws the current picture of a video or image into the slot's canvas with the crop, the chroma key, the AI
 // background matte and the painted custom-removal mask (CPU, at most 640 px wide) and the animated effects
 // (WebGL shaders, the same the export uses, up to 1280 px wide) applied. matte: the hidden video of the clip's
-// matte (white = keep), or null. opts.crop: source-edge fractions cut away before the fit (the surviving region
-// fills the canvas, exactly like the export); opts.custom: the painted keep-map canvas in source geometry.
+// matte (white = keep), or null. opts.crop: source-edge fractions cut away before the fit — the canvas IS the
+// surviving region (its own aspect), so the layer's contain fit places it undistorted, exactly like the
+// export; opts.custom: the painted keep-map canvas in source geometry.
 // Every removal multiplies the alpha, so chroma + matte + custom union, as in electron/layers.cjs.
 const matteCv = typeof document !== 'undefined' ? document.createElement('canvas') : null;
 function drawKeyed(cv, src, w, h, chroma, passes = [], matte = null, opts = {}) {
@@ -43,11 +95,13 @@ function drawKeyed(cv, src, w, h, chroma, passes = [], matte = null, opts = {}) 
   const cap = cpu ? 640 : Math.min(1280, QUALITY_MAX_SIDE[getPlaybackQuality()] || 1280);
   const sw = crop ? w * (1 - crop.l - crop.r) : w;
   const sh = crop ? h * (1 - crop.t - crop.b) : h;
-  // The canvas keeps the SOURCE's aspect: the cropped region is drawn stretched over the whole
-  // canvas, so it lands where the full picture would (the export scales it to the same fit box).
-  const k = Math.min(1, cap / w);
-  const cw = Math.max(2, Math.round(w * k));
-  const ch = Math.max(2, Math.round(h * k));
+  // The canvas has the SURVIVING REGION's aspect (not the source's): the layer element's
+  // object-fit: contain then fits the region into the frame at a uniform scale — the
+  // picture is never stretched over the uncropped fit box (the export fits it the same
+  // way, electron/layers.cjs).
+  const k = Math.min(1, cap / sw);
+  const cw = Math.max(2, Math.round(sw * k));
+  const ch = Math.max(2, Math.round(sh * k));
   if (cv.width !== cw || cv.height !== ch) {
     cv.width = cw;
     cv.height = ch;
@@ -624,6 +678,10 @@ export default function Preview({
             <TransformBox project={editProject || project} time={time} selection={selection} onSelect={onSelect} dispatch={dispatch}
               sw={project.width * scale} sh={project.height * scale} />
           )}
+          {!cropEdit && !colorPick && (() => {
+            const target = regionTarget(project, selection);
+            return target ? <RegionOverlay region={target.region} write={target.write} dispatch={dispatch} /> : null;
+          })()}
           {cropEdit && (() => {
             const srcClip = [...project.videoClips, ...(project.overlayClips || [])].find((c) => c.id === cropEdit.id);
             const srcMedia = srcClip && project.media.find((m) => m.id === srcClip.mediaId);
@@ -808,7 +866,10 @@ function CropEditOverlay({ project, clip, media, value, aspectId, onDraft, time 
   const tNow = (hasMotion(clip) || clip.pin)
     ? stateAtPinned(project, { track: (project.overlayClips || []).some((c) => c.id === clip.id) ? 'overlay' : 'video', clip }, lt, len).transform
     : transformOf(clip);
-  const geom = pictureGeometry(project, media, clip, tNow);
+  // The clip renders UNCROPPED in this mode, so the geometry must describe the full
+  // source's fitted box — pass a crop-less view of the clip (pictureGeometry is otherwise
+  // crop-aware: it boxes the surviving region the renderer would show).
+  const geom = pictureGeometry(project, media, { ...clip, crop: undefined }, tNow);
   const aspect = aspectRatioOf(aspectId, media.width, media.height);
   const midX = (crop.l + 1 - crop.r) / 2;
   const midY = (crop.t + 1 - crop.b) / 2;

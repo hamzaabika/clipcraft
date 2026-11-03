@@ -460,14 +460,17 @@ export default function Timeline({
         return;
       }
       if (toOverlay !== null) { toOverlay = null; setDrop(null); }
-      if (!magnet.video && mode !== 'move') {
-        // Magnet off: the trimmed time turns into a gap so later clips keep their place.
+      if (mode === 'left' || (!magnet.video && mode !== 'move')) {
+        // Left edge (either magnet state) and every magnet-off trim go through trimClip:
+        // it anchors the edge that is NOT dragged — a left trim keeps the clip's right edge
+        // fixed, moves the start and advances the source in-offset by the same delta (the
+        // frame under any fixed timeline point does not change), and the removed head
+        // becomes a gap before the clip. (This branch used to patch `in` alone for the
+        // magnet-on left edge: the start stayed put, the right edge rushed in and the
+        // content slipped — the clip collapsed instead of trimming.)
         dispatch({ type: 'trimClip', track: 'video', id: clip.id, edge: mode, delta: mode === 'left' ? d : -d });
-      } else if (mode === 'left' && !isImage) {
-        dispatch({ type: 'update', track: 'video', id: clip.id, patch: { in: clamp(o.in + d * sp, 0, o.out - MIN_CLIP) } });
-      } else if (mode === 'right' || mode === 'left') {
-        const dd = mode === 'left' ? -d : d;
-        dispatch({ type: 'update', track: 'video', id: clip.id, patch: { out: clamp(o.out + dd * sp, o.in + MIN_CLIP, isImage ? 3600 : media.duration) } });
+      } else if (mode === 'right') {
+        dispatch({ type: 'update', track: 'video', id: clip.id, patch: { out: clamp(o.out + d * sp, o.in + MIN_CLIP * sp, isImage ? 3600 : media.duration) } });
       } else {
         // Reorder on the magnetic main track: drop index from the pointer position among the other clips.
         const others = videoLayout(project.videoClips.filter((c) => c.id !== clip.id));
