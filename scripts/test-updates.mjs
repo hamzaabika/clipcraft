@@ -2,7 +2,7 @@
 // stub fetch implementations so no network is involved. Run: node scripts/test-updates.mjs
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { check, compare, downloadInstaller, lastDownload } = require('../electron/updates.cjs');
+const { check, compare, downloadInstaller, installCommand, installDownloaded, lastDownload } = require('../electron/updates.cjs');
 
 let fails = 0;
 const eq = (got, want, label) => { const ok = got === want; if (!ok) { fails++; console.error(`MISMATCH ${label}: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`); } };
@@ -85,7 +85,41 @@ d = await downloadInstaller('http://127.0.0.1:8901/x.deb', { fetchImpl: streamFe
 eq(/allowed host/.test(d.error || ''), true, 'plain-http localhost refused without the dev override');
 d = await downloadInstaller('https://hamzaabika.com/x.deb', { fetchImpl: streamFetch([], 500), destDir });
 eq(/answered 500/.test(d.error || ''), true, 'download surfaces server error');
+// One-click install: the command is a per-platform argv array (never a shell string, so the
+// path is passed exactly), and installDownloaded only ever runs against the file this app
+// itself just downloaded into the downloads folder it was streamed to.
+const argvEq = (got, want, label) => eq(JSON.stringify(got), JSON.stringify(want), label);
+let c = installCommand('/home/u/Downloads/ClipCraft-1.1.3.deb', 'linux');
+eq(c.file, 'pkexec', 'linux deb installs through pkexec');
+argvEq(c.args, ['/usr/bin/apt', 'install', '-y', '/home/u/Downloads/ClipCraft-1.1.3.deb'], 'linux deb argv (apt resolves deps for a local file)');
+c = installCommand('/home/u/Downloads/ClipCraft-Setup-1.1.3.exe', 'win32');
+eq(c.file, '/home/u/Downloads/ClipCraft-Setup-1.1.3.exe', 'windows exe runs itself');
+argvEq(c.args, ['/S'], 'windows exe is silent (NSIS /S)');
+c = installCommand('/home/u/Downloads/ClipCraft-1.1.3.msi', 'win32');
+eq(c.file, 'msiexec.exe', 'windows msi goes through msiexec');
+argvEq(c.args, ['/i', '/home/u/Downloads/ClipCraft-1.1.3.msi', '/quiet', '/norestart'], 'windows msi argv');
+eq(installCommand('/home/u/Downloads/ClipCraft-1.1.3.dmg', 'darwin'), null, 'mac dmg has no silent install (opened instead)');
+eq(installCommand('/home/u/Downloads/ClipCraft-1.1.3.AppImage', 'linux'), null, 'linux non-deb has no install command');
+
+let dl2 = await downloadInstaller('https://hamzaabika.com/clipcraft/ClipCraft-9.9.9.deb', { fetchImpl: streamFetch([payload]), destDir });
+eq(!!dl2.path, true, 'second download lands for the install tests');
+const spawnCalls = [];
+const stubSpawn = (code, err) => (file, args) => { spawnCalls.push([file, ...args]); return { on: (ev, cb) => { if (ev === 'error' && err) cb(err); if (ev === 'close' && !err) cb(code); } }; };
+let ir = await installDownloaded({ destDir, spawnImpl: stubSpawn(0), platform: 'linux' });
+eq(ir.ok, true, 'install resolves ok on a clean exit');
+argvEq(spawnCalls[0], ['pkexec', '/usr/bin/apt', 'install', '-y', dl2.path], 'install spawns pkexec + apt on exactly the downloaded file');
+ir = await installDownloaded({ destDir, spawnImpl: stubSpawn(126), platform: 'linux' });
+eq(/cancelled/.test(ir.error || ''), true, 'pkexec dismissal (126) is reported as cancelled');
+ir = await installDownloaded({ destDir, spawnImpl: stubSpawn(1), platform: 'linux' });
+eq(/exit 1/.test(ir.error || ''), true, 'a failed install names its exit code');
+ir = await installDownloaded({ destDir, spawnImpl: stubSpawn(0, new Error('ENOENT')), platform: 'linux' });
+eq(/Could not start/.test(ir.error || ''), true, 'a spawn failure is an honest error');
+ir = await installDownloaded({ destDir, spawnImpl: stubSpawn(0), platform: 'darwin' });
+eq(ir.unsupported, true, 'mac reports unsupported so the caller opens the file');
+ir = await installDownloaded({ destDir: `${destDir}-elsewhere`, spawnImpl: stubSpawn(0), platform: 'linux' });
+eq(/no longer there/.test(ir.error || ''), true, 'a file outside the downloads folder is refused');
+
 fs.rmSync(destDir, { recursive: true, force: true });
 
 if (fails) { console.error(`test-updates: ${fails} failure(s)`); process.exit(1); }
-console.log('updates ok (compare matrix, feed states, link gating, in-app download)');
+console.log('updates ok (compare matrix, feed states, link gating, in-app download, one-click install)');

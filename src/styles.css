@@ -2164,7 +2164,7 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .about-dev b { color: var(--text-1); }
 
 /* About page v1 — ClipCraft's own design (halo logo, version pill, developer card) */
-.modal.about2 { width: 400px; padding: 30px 28px 24px; text-align: center;
+.modal.about2 { width: 400px; max-height: calc(100vh - 40px); overflow-y: auto; padding: 30px 28px 24px; text-align: center;
   background: radial-gradient(120% 90% at 50% 0%, #1b1b2e 0%, var(--surface-1) 55%);
   border: 1px solid var(--border-2, #2b2b3d); border-radius: 20px;
   box-shadow: 0 30px 80px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .05); }
@@ -2193,8 +2193,26 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .about-chips { display: flex; gap: 7px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
 .about-chips span { font-size: 11.5px; color: var(--text-2); background: var(--surface-2);
   border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; }
-.about-updates { margin-top: 18px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.about-notes { font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+.about-updates { margin-top: 18px; display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1 1 auto; min-height: 0; width: 100%; }
+.about-notes { font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+/* Update card sizing: the dialog is capped at the viewport height and the update card's
+   notes area is the one flexible part — it grows with the text (so the release notes read
+   in full, not squeezed into a mini scroll box) and absorbs the squeeze on short windows,
+   while the title, the buttons and the progress stay pinned and visible. */
+.about2 .about-hero, .about2 .about-devcard, .about2 .about-chips, .about2 .about-tour { flex: none; }
+.about-update { min-height: 0; }
+.about-update > * { flex: none; }
+.about-update > .about-notes { flex: 1 1 auto; min-height: 0; max-height: 420px; overflow-y: auto; display: block; width: 100%;
+  white-space: pre-wrap; overflow-wrap: break-word; padding-right: 4px; }
+/* With an update on offer, the card is the point of the visit: the tagline, the chips and
+   the welcome row step aside and the hero + dev card tighten, so the notes and the action
+   buttons fit inside the window even on a short laptop screen. */
+.about2.has-update .about-tag, .about2.has-update .about-chips, .about2.has-update .about-tour { display: none; }
+.about2.has-update .about-halo { width: 58px; height: 58px; border-radius: 17px; margin-bottom: 0; }
+.about2.has-update .about-halo img { width: 38px; height: 38px; border-radius: 10px; }
+.about2.has-update h3 { font-size: 24px; }
+.about2.has-update .about-devcard { margin-top: 14px; padding: 12px 16px 11px; }
+.about2.has-update .about-devlinks { margin-top: 8px; }
 .about-dl { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .about-dl-track { width: 100%; height: 7px; border-radius: 999px; background: var(--surface-3, #20202f); overflow: hidden; }
 .about-dl-fill { height: 100%; border-radius: 999px; background: linear-gradient(92deg, #a78bfa, #825cfb 55%, #6d28e0); transition: width .25s ease; }

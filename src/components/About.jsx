@@ -32,10 +32,20 @@ export function AboutDialog({ onClose, onWelcome }) {
       .catch(() => setDl({ phase: 'error', error: 'The download did not answer.' }));
   };
   const openInstaller = () => window.api.updatesOpenInstaller?.().then((r) => { if (r?.error) setDl({ phase: 'error', error: r.error }); }).catch(() => {});
+  const startInstall = () => {
+    setDl({ phase: 'installing' });
+    window.api.updatesInstall?.()
+      .then((r) => {
+        if (r?.error) setDl((d) => ({ phase: 'install-error', error: r.error, fileName: d?.fileName || '' }));
+        else if (r?.opened) setDl((d) => ({ phase: 'opened', fileName: d?.fileName || '' }));
+        else setDl((d) => ({ phase: 'restarting', fileName: d?.fileName || '' }));
+      })
+      .catch(() => setDl((d) => ({ phase: 'install-error', error: 'The install did not answer.', fileName: d?.fileName || '' })));
+  };
   const mb = (n) => (n / 1048576).toFixed(1);
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="about-title" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal about about2">
+      <div className={`modal about about2${check && check.newer ? ' has-update' : ''}`}>
         <button className="icon-btn about-close" aria-label="Close" onClick={onClose}><X size={16} /></button>
         <div className="about-hero">
           <div className="about-halo"><img src="./logo.png" alt="" draggable={false} /></div>
@@ -78,7 +88,7 @@ export function AboutDialog({ onClose, onWelcome }) {
                     <button className="btn btn-primary btn-sm" onClick={startDownload}><Download size={13} /> Download &amp; install</button>
                     {check.notesUrl && <button className="btn btn-sm" onClick={() => window.api.openHelp(check.notesUrl)}>What's new</button>}
                   </div>
-                  <span className="muted small">You have {check.current}. The installer downloads inside the app — nothing installs until you open it. <button className="linklike" onClick={() => window.api.openHelp(check.downloadUrl)}>Or open the download in your browser</button></span>
+                  <span className="muted small">You have {check.current}. The installer downloads inside the app — after that, one click installs it and restarts ClipCraft into the new version. <button className="linklike" onClick={() => window.api.openHelp(check.downloadUrl)}>Or open the download in your browser</button></span>
                 </>
               )}
               {dl?.phase === 'downloading' && (
@@ -91,9 +101,31 @@ export function AboutDialog({ onClose, onWelcome }) {
                 <>
                   <span className="about-status ok"><CheckCircle2 size={15} /> Downloaded{dl.fileName ? `: ${dl.fileName}` : ''} (in your Downloads folder)</span>
                   <div className="about-devlinks">
-                    <button className="btn btn-primary btn-sm" onClick={openInstaller}><Download size={13} /> Open installer</button>
+                    <button className="btn btn-primary btn-sm" onClick={startInstall}><Download size={13} /> Install &amp; restart</button>
+                    <button className="btn btn-sm" onClick={openInstaller}>Open installer</button>
                   </div>
-                  <span className="muted small">Opening it starts your system installer — that's where the update is applied. You can close ClipCraft first.</span>
+                  <span className="muted small">Install &amp; restart applies the update and reopens ClipCraft — on Linux your system asks for its password once. Your projects and settings stay exactly as they are.</span>
+                </>
+              )}
+              {dl?.phase === 'installing' && (
+                <span className="about-status"><RefreshCw size={14} className="spin" /> Installing… if your system asks for a password, that's the install being approved.</span>
+              )}
+              {dl?.phase === 'restarting' && (
+                <span className="about-status ok"><CheckCircle2 size={15} /> Installed — ClipCraft is restarting into the new version…</span>
+              )}
+              {dl?.phase === 'opened' && (
+                <>
+                  <span className="about-status ok"><CheckCircle2 size={15} /> Downloaded{dl.fileName ? `: ${dl.fileName}` : ''} (in your Downloads folder)</span>
+                  <span className="muted small">The installer is open — finish the install there, then reopen ClipCraft. Your projects and settings stay exactly as they are.</span>
+                </>
+              )}
+              {dl?.phase === 'install-error' && (
+                <>
+                  <span className="about-status error"><WifiOff size={15} /> {dl.error}</span>
+                  <div className="about-devlinks">
+                    <button className="btn btn-primary btn-sm" onClick={startInstall}><Download size={13} /> Install &amp; restart</button>
+                    <button className="btn btn-sm" onClick={openInstaller}>Open installer</button>
+                  </div>
                 </>
               )}
               {dl?.phase === 'error' && (

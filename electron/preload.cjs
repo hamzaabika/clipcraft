@@ -149,6 +149,7 @@ contextBridge.exposeInMainWorld('api', {
   updatesCheck: (auto = false) => ipcRenderer.invoke('updates:check', auto === true),
   updatesDownload: () => ipcRenderer.invoke('updates:download'),
   updatesOpenInstaller: () => ipcRenderer.invoke('updates:openInstaller'),
+  updatesInstall: () => ipcRenderer.invoke('updates:install'),
   onUpdateProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('updates:progress', h); return () => ipcRenderer.removeListener('updates:progress', h); },
   telemetryStatus: () => ipcRenderer.invoke('telemetry:status'),
   telemetrySetConsent: (on) => ipcRenderer.invoke('telemetry:setConsent', on),

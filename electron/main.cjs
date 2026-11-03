@@ -811,6 +811,25 @@ ipcMain.handle('updates:openInstaller', async () => {
   const err = await shell.openPath(p);
   return err ? { error: err } : { ok: true };
 });
+// One-click install of the file downloaded above (updates.cjs validates that it is exactly
+// that file), then a relaunch into the new version: relaunch() registers the fresh start
+// and this process quits, so the new instance begins only after the package files are fully
+// replaced. Where no silent install exists (macOS), fall back to opening the downloaded
+// file — the same behaviour as updates:openInstaller.
+ipcMain.handle('updates:install', async () => {
+  const r = await updates.installDownloaded({ destDir: app.getPath('downloads') });
+  if (r.unsupported) {
+    const p = updates.lastDownload();
+    if (!p || !fs.existsSync(p)) return { error: 'The downloaded installer is no longer there.' };
+    const { shell } = require('electron');
+    const err = await shell.openPath(p);
+    return err ? { error: err } : { ok: true, opened: true };
+  }
+  if (r.error) return r;
+  app.relaunch();
+  setTimeout(() => app.quit(), 300);
+  return { ok: true, restarting: true };
+});
 
 // ---- Anonymous usage statistics: opt-in, see telemetry.cjs. ----
 const telemetry = require('./telemetry.cjs');

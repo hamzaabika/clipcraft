@@ -3,10 +3,15 @@
 // the update feed — a small JSON file published on the ClipCraft site (clipcrafts.pages.dev) —
 // and compares versions. Nothing is sent but the request. When a newer version exists, About
 // offers an IN-APP download with progress (downloadInstaller below, streamed to the user's
-// Downloads folder); nothing installs itself — afterwards the user explicitly clicks
-// "Open installer" and their system installer applies the update. Installing replaces only the
-// app's own program files: projects, recents and settings live in the app's userData folder,
-// which an install-over never touches, so an update loses nothing.
+// Downloads folder). When the download finishes, the same card offers "Install & restart":
+// the downloaded package is installed by the system itself (installDownloaded below — on
+// Linux pkexec runs the package install after the system's own password prompt, on Windows
+// the installer runs silently) and the app relaunches into the new version. A dismissed
+// password prompt or a failed install is reported in the card and falls back to
+// "Open installer"; on macOS the downloaded .dmg is opened for the normal manual install.
+// Installing replaces only the app's own program files: projects, recents and settings live
+// in the app's userData folder, which an install-over never touches, so an update loses
+// nothing.
 // Honest states: "up to date" is reported ONLY after a 200 answer whose version is not newer.
 // Any other outcome (404, 500, offline, a non-feed answer) is an error with its reason — never
 // silently dressed up as "up to date".
@@ -34,8 +39,9 @@ let lastDownloadPath = '';
 
 // Streams the installer at `url` into `destDir`, reporting { received, total } as it goes.
 // The URL is gated to LINK_HOSTS again here (defense in depth — the feed was already gated).
-// Returns { path, fileName, size } or { error }. Nothing is executed or installed: opening
-// the installer afterwards is a separate, explicit user action (openInstaller).
+// Returns { path, fileName, size } or { error }. Nothing is executed here: installing the
+// download afterwards is a separate, explicit user action (installDownloaded below, or
+// opening the file with the system installer).
 async function downloadInstaller(url, { fetchImpl = net.fetch, destDir, onProgress } = {}) {
   const safe = safeLink(url, LINK_HOSTS);
   if (!safe) return { error: 'The download link is not on an allowed host.' };
@@ -83,6 +89,55 @@ async function downloadInstaller(url, { fetchImpl = net.fetch, destDir, onProgre
   } finally {
     clearTimeout(timer);
   }
+}
+
+const { spawn } = require('node:child_process');
+
+// The command that installs a downloaded installer file, per platform — an argv array,
+// never a shell string, so the file path reaches the OS exactly as-is:
+// - Linux .deb: pkexec runs apt on the local file; apt resolves any dependencies the
+//   package declares (a bare dpkg -i would refuse on unmet ones). The password prompt is
+//   the system's own (pkexec/polkit) — the app never sees or handles the password.
+// - Windows .exe: the NSIS installer itself, silent (/S); an .msi goes through msiexec.
+// - macOS .dmg (and anything else): null — no silent install exists; the caller opens the
+//   file for the platform's normal manual install instead.
+function installCommand(file, platform = process.platform) {
+  const ext = path.extname(file).toLowerCase();
+  if (platform === 'linux' && ext === '.deb') return { file: 'pkexec', args: ['/usr/bin/apt', 'install', '-y', file] };
+  if (platform === 'win32' && ext === '.exe') return { file, args: ['/S'] };
+  if (platform === 'win32' && ext === '.msi') return { file: 'msiexec.exe', args: ['/i', file, '/quiet', '/norestart'] };
+  return null;
+}
+
+// Installs the file THIS app downloaded in this session (lastDownloadPath) — the path is
+// validated to still exist and to sit directly inside the downloads folder it was streamed
+// to, so no other file on disk can be substituted for it. Resolves { ok: true } when the
+// installer ran clean, { error } with an honest reason otherwise, and { unsupported: true }
+// where there is no silent install (macOS) so the caller can open the file instead.
+// A pkexec exit code of 126 means the password prompt was dismissed without authenticating.
+async function installDownloaded({ destDir, spawnImpl = spawn, platform = process.platform } = {}) {
+  const file = lastDownloadPath;
+  if (!file || !destDir) return { error: 'Download the update first.' };
+  let ok = false;
+  try { ok = fs.existsSync(file) && path.dirname(file) === path.resolve(destDir); } catch { ok = false; }
+  if (!ok) return { error: 'The downloaded installer is no longer there.' };
+  const cmd = installCommand(file, platform);
+  if (!cmd) return { unsupported: true };
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnImpl(cmd.file, cmd.args, { stdio: 'ignore' });
+    } catch {
+      resolve({ error: 'Could not start the system installer.' });
+      return;
+    }
+    child.on('error', () => resolve({ error: 'Could not start the system installer.' }));
+    child.on('close', (code) => {
+      if (code === 0) resolve({ ok: true });
+      else if (code === 126) resolve({ error: 'The install was cancelled — the system password prompt was dismissed.' });
+      else resolve({ error: `The system installer did not finish (exit ${code ?? 'unknown'}).` });
+    });
+  });
 }
 
 // MAJOR.MINOR.PATCH with an optional -suffix; a pre-release comes before its release (1.1.0-beta.1 < 1.1.0).
@@ -134,7 +189,7 @@ async function check(fetchImpl = net.fetch) {
       newer: compare(latest, current) > 0,
       downloadUrl: safeLink(r.download_url, LINK_HOSTS) || SITE,
       notesUrl: safeLink(r.notes_url, LINK_HOSTS),
-      notes: typeof r.notes === 'string' ? r.notes.slice(0, 400) : '',
+      notes: typeof r.notes === 'string' ? r.notes.slice(0, 2000) : '',
       releaseDate: typeof r.release_date === 'string' ? r.release_date : '',
       size: typeof r.size === 'string' ? r.size : '',
     };
@@ -145,4 +200,4 @@ async function check(fetchImpl = net.fetch) {
   }
 }
 
-module.exports = { check, compare, downloadInstaller, lastDownload: () => lastDownloadPath };
+module.exports = { check, compare, downloadInstaller, installCommand, installDownloaded, lastDownload: () => lastDownloadPath };
