@@ -1,7 +1,7 @@
 {
   "name": "clipcraft",
   "productName": "ClipCraft",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "homepage": "https://hamzaabika.com",
   "description": "ClipCraft - free, open-source desktop video editor (Electron + React + FFmpeg)",
   "main": "electron/main.cjs",
