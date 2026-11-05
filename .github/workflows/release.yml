@@ -1,0 +1,246 @@
+# ClipCraft public release pipeline.
+#
+# Builds the light (no bundled content pack) installers for Linux, Windows and
+# macOS on native runners and publishes ONE GitHub Release with all three,
+# SHA-256 checksums in the notes, and the README media (screenshots, logo,
+# demo videos) as assets.
+#
+# Triggers:
+#   - push to a release/vX.Y.Z branch (the release branch also carries the
+#     ci-assets bootstrap: brand files + screenshots that cannot travel as
+#     text snapshots — see ci-assets.sha256 / the decode step below)
+#   - push of a v* tag
+#   - manual workflow_dispatch
+#
+# The builds are UNSIGNED (CSC_IDENTITY_AUTO_DISCOVERY=false): Windows shows a
+# SmartScreen prompt and macOS a Gatekeeper prompt on first launch; the
+# release notes say so plainly.
+
+name: Release
+
+on:
+  push:
+    branches: ['release/v*']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  templates:
+    name: Generate bundled templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decode ci-assets (brand files + template seed photos)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat ci-assets/part-* | base64 -d | tar -xzf -
+          sha256sum -c ci-assets.sha256
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install scene-composer Python deps
+        run: pip install pillow numpy
+
+      - name: Generate bundled template packages
+        run: node scripts/make-bundled-templates.cjs
+
+      - name: Verify generated set
+        shell: bash
+        run: |
+          set -euo pipefail
+          docs=$(find bundled-templates -name template.json | wc -l)
+          media=$(find bundled-templates -type f \( -name '*.mp4' -o -name '*.m4a' -o -name '*.jpg' \) | wc -l)
+          echo "template docs: $docs, media files: $media"
+          test "$docs" -ge 40
+          test "$media" -ge 140
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundled-templates
+          path: bundled-templates
+          retention-days: 1
+
+      - name: Report failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue create --title "Release CI failure: templates job (${{ github.ref_name }})" \
+            --body "The bundled-templates generation job failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: templates
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            eb: --linux deb --x64
+            artifact: clipcraft_*.deb
+          - os: windows-latest
+            eb: --win nsis --x64
+            artifact: ClipCraft-Setup-*.exe
+          - os: macos-latest
+            eb: --mac dmg --universal
+            artifact: ClipCraft-*.dmg
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decode ci-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat ci-assets/part-* | base64 -d | tar -xzf -
+          sha256sum -c ci-assets.sha256
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundled-templates
+          path: bundled-templates
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Version guard (tag/branch must match package.json)
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./package.json').version")
+          echo "package version: $v"
+          case "${{ github.ref }}" in
+            refs/tags/v*)        test "${{ github.ref_name }}" = "v$v" ;;
+            refs/heads/release/v*) test "${{ github.ref_name }}" = "release/v$v" ;;
+          esac
+
+      - name: Prepare release builder config (pack excluded)
+        run: node scripts/prepare-release-config.cjs
+
+      - name: Build renderer
+        run: npm run build
+
+      - name: Package installer
+        shell: bash
+        run: |
+          set -o pipefail
+          npx electron-builder ${{ matrix.eb }} --config electron-builder.release.json 2>&1 | tee build-${{ matrix.os }}.log
+
+      - name: List installer
+        shell: bash
+        run: ls -la release/${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: release/${{ matrix.artifact }}
+          retention-days: 1
+
+      - name: Report failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tail -c 6000 build-${{ matrix.os }}.log > /tmp/ci-tail.txt 2>/dev/null || true
+          gh issue create --title "Release CI failure: build ${{ matrix.os }} (${{ github.ref_name }})" \
+            --body "The ${{ matrix.os }} build job failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Last log lines:
+          $(cat /tmp/ci-tail.txt)" || true
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decode ci-assets (README media)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat ci-assets/part-* | base64 -d | tar -xzf -
+          sha256sum -c ci-assets.sha256
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          path: installers
+          merge-multiple: true
+
+      - name: Compose release notes with checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./package.json').version")
+          cd installers
+          sha256sum * > ../SHA256SUMS.txt
+          cd ..
+          {
+            echo "## ClipCraft $v"
+            echo
+            echo "Free, open-source desktop video editor — no watermark, no account, no subscription. Linux, Windows and macOS builds below."
+            echo
+            echo "### Install"
+            echo "- **Linux (.deb):** \`sudo apt install ./clipcraft_${v}_amd64.deb\`"
+            echo "- **Windows (.exe):** run \`ClipCraft-Setup-${v}.exe\`. The build is unsigned, so SmartScreen will warn — click **More info → Run anyway**."
+            echo "- **macOS (.dmg):** open \`ClipCraft-${v}.dmg\` and drag ClipCraft to Applications. The build is unsigned, so Gatekeeper blocks the first launch — **right-click the app → Open**, or allow it under System Settings → Privacy & Security."
+            echo
+            echo "### SHA-256 checksums"
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+            echo
+            echo "Screenshots, the logo and the demo videos attached to this release are the README media."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Read package version
+        shell: bash
+        run: echo "PKG_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
+      - name: Create the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.PKG_VERSION }}
+          name: ClipCraft ${{ env.PKG_VERSION }}
+          body_path: release-notes.md
+          files: |
+            installers/*
+            screenshots/*.png
+            public/logo.png
+            videos/*.mp4
+
+      - name: Report failure as an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue create --title "Release CI failure: release job (${{ github.ref_name }})" \
+            --body "The release publish job failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
