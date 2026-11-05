@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FIT_VIEW, QUALITY_LABELS, QUALITY_MAX_SIDE, applyZoomChoice, clipLen, formatTime, freeLen, getPlaybackQuality, levelCopyState, previewPath, toFileUrl, videoLayout, zoomByFactor, zoomTransform } from '../store.js';
+import { FIT_VIEW, QUALITY_LABELS, QUALITY_MAX_SIDE, applyZoomChoice, clipLen, formatTime, freeLen, getPlaybackQuality, levelCopyState, needsPreviewCopy, previewPath, toFileUrl, videoLayout, zoomByFactor, zoomTransform } from '../store.js';
 import { hasMotion } from '../anim.js';
 import { fitFactors, mediaToStage, pinOffsetAt, stageToMedia, stateAtPinned } from '../track.js';
 import { aspectRatioOf, dragCrop, moveCrop } from '../cropMath.js';
@@ -339,6 +339,40 @@ export default function Preview({
   }, []);
   const mediaById = Object.fromEntries(project.media.map((m) => [m.id, m]));
 
+  // QA2 (2026-11-05) — honest stage state + error recovery for clips whose file the
+  // player cannot show directly. While such a clip's preview copy is being made, the
+  // stage used to sit black and silent (the only hint was a badge on the media card);
+  // when the copy failed, it stayed black forever. Now the stage says what is happening,
+  // offers a retry, and a <video> element error re-queues the media item once per
+  // source so the main process can prune/regenerate instead of stranding the element.
+  const errRequeued = useRef(new Set());
+  const visualsSubset = (m) => ({ path: m.path, type: m.type, duration: m.duration, hasAudio: m.hasAudio, width: m.width, height: m.height, proxy: m.proxy, lightProxy: m.lightProxy, proxies: m.proxies });
+  const onElError = (el) => {
+    if (!el) return;
+    const src = el.dataset.src || el.currentSrc || '';
+    if (!src || errRequeued.current.has(src)) return;
+    errRequeued.current.add(src);
+    const m = project.media.find((x) => [x.path, x.proxy, x.lightProxy, ...Object.values(x.proxies || {})]
+      .some((p) => typeof p === 'string' && p && toFileUrl(p) === src));
+    if (m) window.api.ensureVisuals([visualsSubset(m)]);
+  };
+  const retryPreview = (m) => { if (m) window.api.ensureVisuals([visualsSubset(m)], { force: true }); };
+  const chipFor = (m) => {
+    if (!m || m.type !== 'video' || !needsPreviewCopy(m)) return null;
+    if (m.proxyFailed && !m.proxy) return { kind: 'failed', m };
+    if (!m.proxy && previewPath(m) === m.path) return { kind: 'preparing', m };
+    return null;
+  };
+  const chipStates = [];
+  for (const l of videoLayout(project.videoClips)) {
+    if (time >= l.start && time < l.end) { const s = chipFor(mediaById[l.clip.mediaId]); if (s) chipStates.push(s); }
+  }
+  for (const c of project.overlayClips || []) {
+    const len = (c.out - c.in) / (c.speed || 1);
+    if (time >= (c.start || 0) && time < (c.start || 0) + len) { const s = chipFor(mediaById[c.mediaId]); if (s) chipStates.push(s); }
+  }
+  const stageChip = chipStates.find((s) => s.kind === 'failed') || chipStates[0] || null;
+
   const apply = (t, isPlaying) => {
     lastApply.current = { t, playing: isPlaying };
     leadRef.current = null;
@@ -638,7 +672,7 @@ export default function Preview({
           {[0, 1].map((k) => (
             <div key={k} className="slot" ref={slots[k]}>
               <div className="layer" ref={layers[k]}>
-                <video ref={vids[k]} preload="auto" playsInline onSeeked={redraw} onLoadedData={redraw} />
+                <video ref={vids[k]} preload="auto" playsInline onSeeked={redraw} onLoadedData={redraw} onError={() => onElError(vids[k].current)} />
                 <video ref={mattes[k]} className="matte-src" preload="auto" playsInline muted onSeeked={redraw} onLoadedData={redraw} />
                 <img ref={imgs[k]} alt="" onLoad={redraw} />
                 <canvas ref={keyed[k]} className="keyed" />
@@ -648,6 +682,18 @@ export default function Preview({
           ))}
           <canvas className="fx-transition" ref={trCanvas} />
           <div className="flash" ref={flashRef} />
+          {stageChip && (
+            <div className={`stage-note ${stageChip.kind}`} role="status">
+              {stageChip.kind === 'failed' ? (
+                <>
+                  <span>Couldn't make a preview copy for “{stageChip.m.name}” — this file can't play in the preview as-is. Export still uses the original.</span>
+                  <button className="stage-note-btn" onClick={() => retryPreview(stageChip.m)}>Retry</button>
+                </>
+              ) : (
+                <span>Preparing preview… making a playable copy of “{stageChip.m.name}”. Export uses the original.</span>
+              )}
+            </div>
+          )}
           {(project.overlayClips || []).map((c) => {
             const m = mediaById[c.mediaId];
             const reg = (part) => (node) => {
@@ -658,7 +704,7 @@ export default function Preview({
             return (
               <div key={c.id} className="slot ov" ref={reg('slot')} style={{ visibility: 'hidden' }}>
                 <div className="layer" ref={reg('layer')}>
-                  <video ref={reg('v')} preload="auto" playsInline onSeeked={redraw} onLoadedData={redraw}
+                  <video ref={reg('v')} preload="auto" playsInline onSeeked={redraw} onLoadedData={redraw} onError={() => onElError(overlayEls.current[c.id]?.v)}
                     style={{ display: m?.type === 'video' ? 'block' : 'none' }} />
                   <img ref={reg('img')} alt="" onLoad={redraw} style={{ display: m?.type === 'image' ? 'block' : 'none' }} />
                   <video ref={reg('mv')} className="matte-src" preload="auto" playsInline muted onSeeked={redraw} onLoadedData={redraw} />

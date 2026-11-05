@@ -45,8 +45,11 @@ function qualityScaleFilter(quality) {
 // used to trust it: the player pointed its element at the dead file (black picture, error
 // MEDIA_ERR_SRC_NOT_SUPPORTED, sound from other clips still playing), levelCopyState called
 // it 'ready', and regeneration skipped string entries entirely, so the black box never healed.
-// A copy pointer is therefore only worth what the disk says: given an `exists(path)` check,
-// return { item, patch } with every dead pointer cleared (null), or null when all are alive.
+// A copy pointer is therefore only worth what the disk says: given a `usable(path)` check,
+// return { item, patch } with every unusable pointer cleared (null), or null when all are
+// alive. The caller passes "usable as a playable file" (a real, non-empty regular file —
+// electron/ffmpeg.cjs usableCopyFile), not mere existence: a directory or corrupt stub at
+// a copy path also reads as unusable and is pruned (QA audit #2, 2026-11-05, RC2).
 // `false` entries are a state (generation failed), not a path, and are left alone. Pure, so
 // the suite can drive it with a fake disk.
 function pruneDeadCopies(item, exists) {

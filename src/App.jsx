@@ -1,6 +1,6 @@
 import React, { useMemo, useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { recentEntryFor } from './recents.js';
-import { LAYERED, canvasFor, clipLayer, emptyProject, findClipIn, findLinkPartner, freeLen, historyReducer, isLayerLocked, layerCount, layerFree, layerName, layerOf, levelCopyState, lockedMediaUse, markerNear, parseEffectKey, pickAttributes, projectDuration, renderable, setPlaybackQuality, toFileUrl, trimActions, uid, videoClipAt, videoLayout } from './store.js';
+import { LAYERED, canvasFor, clipLayer, emptyProject, findClipIn, findLinkPartner, freeLen, historyReducer, isLayerLocked, layerCount, layerFree, layerName, layerOf, levelCopyState, lockedMediaUse, markerNear, needsPreviewCopy, parseEffectKey, pickAttributes, projectDuration, renderable, setPlaybackQuality, toFileUrl, trimActions, uid, videoClipAt, videoLayout } from './store.js';
 import HomeScreen from './components/HomeScreen.jsx';
 import SequenceDialog from './components/SequenceDialog.jsx';
 import { mismatchFor, sequencePatchFor } from './sequence.js';
@@ -317,11 +317,15 @@ export default function App() {
   // exist — a pointer whose cache file was deleted otherwise leaves the player on a dead file
   // (black picture) forever, because 'ready' state never re-queues. Main prunes dead pointers
   // (pruneDeadCopies) and regenerates; healthy pointers make the round-trip a no-op.
-  const mediaKey = project.media.map((m) => `${m.path}|${m.thumbCount ? 1 : 0}|${m.poster ? 1 : 0}|${m.wave ? 1 : 0}|${m.optimizing ? 1 : 0}|${m.lightProxy == null ? 0 : 1}|${m.proxies?.[quality] == null ? 0 : 1}`).join(';') + `|${quality}`;
+  const mediaKey = project.media.map((m) => `${m.path}|${m.thumbCount ? 1 : 0}|${m.poster ? 1 : 0}|${m.wave ? 1 : 0}|${m.optimizing ? 1 : 0}|${m.proxy ? 1 : 0}|${m.proxyFailed ? 1 : 0}|${m.lightProxy == null ? 0 : 1}|${m.proxies?.[quality] == null ? 0 : 1}`).join(';') + `|${quality}`;
   useEffect(() => {
     const carriesCopies = (m) => typeof m.proxy === 'string' || typeof m.lightProxy === 'string'
       || !!(m.proxies && Object.values(m.proxies).some((v) => typeof v === 'string'));
-    const missing = project.media.filter((m) => (m.type === 'video' && (!m.thumbCount || !m.poster || m.optimizing || levelCopyState(m, quality) === 'fallback' || levelCopyState(m, quality) === 'failed' || carriesCopies(m))) || (m.hasAudio && !m.wave));
+    // QA2 (2026-11-05): a video whose preview copy failed (proxyFailed) is re-queued so
+    // the main process gives it its one automatic retry; a video that needs a preview
+    // copy but has none (older projects whose items were never queued for one) is
+    // queued too — the main process confirms with a real probe before making anything.
+    const missing = project.media.filter((m) => (m.type === 'video' && (!m.thumbCount || !m.poster || m.optimizing || m.proxyFailed || (needsPreviewCopy(m) && !m.proxy) || levelCopyState(m, quality) === 'fallback' || levelCopyState(m, quality) === 'failed' || carriesCopies(m))) || (m.hasAudio && !m.wave));
     if (missing.length) {
       window.api.ensureVisuals(missing.map(({ path, type, duration, hasAudio, width, height, proxy, lightProxy, proxies }) => ({ path, type, duration, hasAudio, width, height, proxy, lightProxy, proxies })));
     }

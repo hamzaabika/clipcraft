@@ -15,7 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { FxJobs } = require('./fxjobs.cjs');
-const { probe, runExport, exportAudio, toM4a, renderTimelineAudio, detectSilences, makeVisuals, needsProxy, makeProxy, makeLightProxy, makeQualityProxy, hasLibx265 } = require('./ffmpeg.cjs');
+const { probe, runExport, exportAudio, toM4a, renderTimelineAudio, detectSilences, makeVisuals, needsProxy, usableCopyFile, makeProxy, makeLightProxy, makeQualityProxy, hasLibx265 } = require('./ffmpeg.cjs');
 const { qualityTargetSize, pruneDeadCopies } = require('./quality.cjs');
 const whisper = require('./whisper.cjs');
 const cloudCaptions = require('./cloudCaptions.cjs');
@@ -165,6 +165,8 @@ async function probeAll(files) {
 const visualsQueue = [];
 const visualsQueued = new Set();
 const proxyRetried = new Set(); // "path|quality" keys already given their one retry this session
+const previewProxyState = new Map(); // path -> { failed, retried } for the preview copy (QA2 RC3)
+const forceProxyPaths = new Set(); // paths the user explicitly asked to retry (Retry buttons)
 let visualsActive = 0;
 const VISUALS_CONCURRENCY = { 'low-end': 1, balanced: 2, 'high-performance': 3 };
 
@@ -213,8 +215,11 @@ async function processVisualItem(it) {
     // Dead copy pointers first (see pruneDeadCopies in quality.cjs): clear them in the
     // renderer before anything else reads them, so the player falls back to a working
     // file at once; the generation paths below then remake the copies because the
-    // entries read as missing (null), which is what they already key on.
-    const pruned = pruneDeadCopies(it, (p) => fs.existsSync(p));
+    // entries read as missing (null), which is what they already key on. The predicate
+    // is "usable as a playable file" (a real, non-empty regular file), not mere
+    // existence: a directory or corrupt stub at a copy path otherwise reads as a ready
+    // copy and blacks the player permanently (QA2 RC2).
+    const pruned = pruneDeadCopies(it, usableCopyFile);
     if (pruned) {
       send(pruned.patch);
       it = pruned.item;
@@ -222,12 +227,50 @@ async function processVisualItem(it) {
     await makeVisuals(it, cache, send).catch(() => {});
     // Preview proxy for video the player cannot decode well (projects saved earlier lack the codec details).
     try {
-      const info = it.pixFmt === undefined || it.hdr === undefined ? { ...it, ...(await probe(it.path)) } : it;
+      const lackedCodec = it.vcodec === undefined || it.pixFmt === undefined || it.hdr === undefined;
+      const info = lackedCodec ? { ...it, ...(await probe(it.path)) } : it;
+      // Items that arrived without codec details (older projects, the renderer's
+      // visuals subset) get them patched back, so the renderer's own decodability
+      // judgement (needsPreviewCopy) works on facts instead of guessing "unknown".
+      if (lackedCodec && info.vcodec !== undefined) {
+        send({ vcodec: info.vcodec, pixFmt: info.pixFmt, profile: info.profile, hdr: info.hdr, acodec: info.acodec, channels: info.channels, fps: info.fps, rotation: info.rotation });
+      }
       let proxyPath = it.proxy;
       if (needsProxy(info)) {
-        if (!it.proxy || !fs.existsSync(it.proxy)) send({ optimizing: true });
-        proxyPath = await makeProxy(info, cache);
-        send({ proxy: proxyPath, optimizing: false });
+        // Preview-copy failure is a STATE, not a silent catch (QA2 RC3): the first
+        // failure is retried once automatically (the renderer re-queues the item when
+        // the flag lands); after that only an explicit user retry (force) tries again.
+        // A usable saved copy keeps playing throughout: makeProxy is still consulted
+        // because its cache key covers the source's size+mtime, so a file replaced
+        // under the same path earns a fresh copy and a fresh pointer.
+        const st = previewProxyState.get(it.path) || {};
+        const forced = forceProxyPaths.delete(it.path);
+        const haveUsable = typeof proxyPath === 'string' && proxyPath !== '';
+        if (!haveUsable && st.failed && st.retried && !forced) {
+          proxyPath = null; // already retried: leave the failed state the renderer shows
+        } else {
+          // This attempt IS the retry when a failure is already on record; the flag is
+          // written before the attempt and preserved in the catch — reading the stale
+          // snapshot there would reset it and loop the retries forever.
+          const isRetry = !!st.failed;
+          if (!haveUsable) {
+            previewProxyState.set(it.path, { failed: true, retried: isRetry });
+            send({ optimizing: true, proxyFailed: false });
+          }
+          try {
+            proxyPath = await makeProxy(info, cache);
+            previewProxyState.delete(it.path);
+            send({ proxy: proxyPath, proxyFailed: false, optimizing: false });
+          } catch {
+            if (haveUsable) {
+              send({ optimizing: false }); // the saved copy still plays; not a failure
+            } else {
+              previewProxyState.set(it.path, { failed: true, retried: isRetry });
+              proxyPath = null;
+              send({ proxyFailed: true, optimizing: false });
+            }
+          }
+        }
       }
       // Playback quality below Full: the level's scaled copy (see quality.cjs). While it is missing the
       // player falls back to smaller copies / the original; the patch swaps it in when ready. A source
@@ -320,7 +363,12 @@ ipcMain.handle('color:sample', async (_e, item, from, to) => {
   }
 });
 
-ipcMain.handle('media:ensureVisuals', (_e, items) => queueVisuals(items.filter((i) => i && fs.existsSync(i.path))));
+ipcMain.handle('media:ensureVisuals', (_e, items, opts) => {
+  // A user-pressed Retry (stage chip / media card) forces one fresh preview-copy
+  // attempt for those paths, past the once-per-session automatic retry brake.
+  if (opts && opts.force) for (const i of items || []) if (i && i.path) forceProxyPaths.add(i.path);
+  return queueVisuals((items || []).filter((i) => i && fs.existsSync(i.path)));
+});
 
 ipcMain.handle('media:import', async () => {
   const res = await dialog.showOpenDialog(win, {

@@ -917,11 +917,48 @@ async function makeVisuals(item, cacheDir, onUpdate = () => {}) {
   return out;
 }
 
+// A generated copy only counts if it is a real, non-empty file. A directory, a zero-byte
+// stub or a corrupt leftover at the copy path used to be handed to the player as "ready"
+// (existsSync was the only check), which produced a permanent black picture with
+// MEDIA_ERR_SRC_NOT_SUPPORTED (QA audit #2, 2026-11-05, RC2).
+function usableCopyFile(p) {
+  try { const s = fs.statSync(p); return s.isFile() && s.size > 0; } catch { return false; }
+}
+
+// The cached copy at `out`, or null when there is nothing usable there — in which case
+// whatever sits at the path is removed so the copy can be regenerated cleanly.
+function cachedCopy(out) {
+  if (usableCopyFile(out)) return out;
+  if (fs.existsSync(out)) { try { fs.rmSync(out, { recursive: true, force: true }); } catch { /* the regeneration below surfaces the failure */ } }
+  return null;
+}
+
+// A freshly made copy must actually contain the picture: ffmpeg exits 0 even when it only
+// decoded part of a corrupt source, so probe the result and require a video stream whose
+// duration covers nearly all of the source (QA2 RC2b). A short copy is deleted and the
+// generation counts as failed.
+async function assertCopyComplete(out, item) {
+  const info = await probe(out).catch(() => null);
+  if (!info || info.type !== 'video' || !(info.duration > 0) || (item && item.duration > 0 && info.duration < item.duration * 0.85)) {
+    try { fs.rmSync(out, { force: true }); } catch { /* ignore */ }
+    throw new Error('The preview copy came out incomplete.');
+  }
+}
+
+// Containers Chromium cannot be trusted to demux in a <video> element, whatever the codec
+// inside: AVI fails outright (MEDIA_ERR_SRC_NOT_SUPPORTED), MKV is marginal — metadata
+// and audio load and the clock advances, but frames may never paint (QA audit #2,
+// 2026-11-05, RC1). Files in these containers always get a preview copy; the export
+// still reads the original.
+const PREVIEW_HOSTILE_EXTS = ['mkv', 'avi', 'ts', 'm2ts', 'mts', 'flv', 'wmv', 'mpg', 'mpeg', 'vob', 'asf', 'divx', 'rm', 'rmvb'];
+
 // The player (Chromium) only decodes 8-bit 4:2:0 H.264 / VP8 / VP9 / AV1 smoothly. 10-bit or 4:2:2 video, HEVC,
 // ProRes and pictures above 1080p play with a stuck or black picture, so they get a light preview copy (proxy),
 // The export always uses the original file.
 function needsProxy(info) {
   if (!info || info.type !== 'video') return false;
+  const ext = path.extname(info.path || '').slice(1).toLowerCase();
+  if (PREVIEW_HOSTILE_EXTS.includes(ext)) return true;
   const okCodec = ['h264', 'vp8', 'vp9', 'av1'].includes(info.vcodec);
   const okPix = ['yuv420p', 'yuvj420p'].includes(info.pixFmt);
   const big = (info.width || 0) * (info.height || 0) > 1920 * 1088;
@@ -961,7 +998,8 @@ async function makeProxy(item, cacheDir) {
   const key = require('crypto').createHash('sha1').update(`${item.path}|${st.size}|${st.mtimeMs}|proxy1${item.hdr ? '-sdr' : ''}`).digest('hex').slice(0, 16);
   fs.mkdirSync(cacheDir, { recursive: true });
   const out = path.join(cacheDir, `${key}-proxy.mp4`);
-  if (fs.existsSync(out)) return out;
+  const hit = cachedCopy(out);
+  if (hit) return hit;
   const part = path.join(cacheDir, `${key}-proxy.part.mp4`);
   // Down to 720p first: the HDR tone mapping works in floating point, so it runs on 9x fewer pixels for 4K.
   // (At 720p libx264 is as fast as a graphics card encoder here: decoding and tone mapping take the time.)
@@ -971,6 +1009,7 @@ async function makeProxy(item, cacheDir) {
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-g', '15', '-keyint_min', '15', '-sc_threshold', '0',
     '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', part]);
   fs.renameSync(part, out);
+  await assertCopyComplete(out, item);
   return out;
 }
 
@@ -982,7 +1021,8 @@ async function makeLightProxy(item, cacheDir) {
   const key = require('crypto').createHash('sha1').update(`${item.path}|${st.size}|${st.mtimeMs}|lproxy1${item.hdr ? '-sdr' : ''}`).digest('hex').slice(0, 16);
   fs.mkdirSync(cacheDir, { recursive: true });
   const out = path.join(cacheDir, `${key}-lproxy.mp4`);
-  if (fs.existsSync(out)) return out;
+  const hitL = cachedCopy(out);
+  if (hitL) return hitL;
   const part = path.join(cacheDir, `${key}-lproxy.part.mp4`);
   await runFfmpeg(['-i', item.path, '-map', '0:v:0', '-map', '0:a:0?',
     '-vf', `scale=w='if(gt(iw,ih),-2,min(540,iw))':h='if(gt(iw,ih),min(540,ih),-2)'${item.hdr ? `,${TONEMAP}` : ''},format=yuv420p`,
@@ -1005,7 +1045,8 @@ async function makeQualityProxy(item, cacheDir, quality) {
   const key = require('crypto').createHash('sha1').update(`${item.path}|${st.size}|${st.mtimeMs}|q${quality}1${item.hdr ? '-sdr' : ''}`).digest('hex').slice(0, 16);
   fs.mkdirSync(cacheDir, { recursive: true });
   const out = path.join(cacheDir, `${key}-q${quality}.mp4`);
-  if (fs.existsSync(out)) return out;
+  const hitQ = cachedCopy(out);
+  if (hitQ) return hitQ;
   const part = path.join(cacheDir, `${key}-q${quality}.part.mp4`);
   const crf = { high: 23, medium: 26, low: 28 }[quality] || 26;
   await runFfmpeg(['-i', item.path, '-map', '0:v:0', '-map', '0:a:0?',
@@ -1021,6 +1062,7 @@ async function makeQualityProxy(item, cacheDir, quality) {
     ...(item.acodec === 'aac' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', quality === 'high' ? '128k' : '96k']),
     '-movflags', '+faststart', part]);
   fs.renameSync(part, out);
+  await assertCopyComplete(out, item);
   return out;
 }
 
@@ -1051,4 +1093,4 @@ async function sampleFrames(item, from, to, count = 8) {
 
 module.exports = {
   sampleFrames,
-  toSdr, stillInput, graphFile, pickEncoder, hasLibx265, effectiveExport, makeScene, needsProxy, makeProxy, makeLightProxy, makeQualityProxy, ffmpegPath, ffprobePath, probe, lookFilters, fitSize, narrowClip, buildExportArgs, buildAudioExportArgs, exportAudio, runExport, toM4a, renderMainAudio, renderTimelineAudio, detectSilences, makeVisuals, parseProgressValues, createProgressParser };
+  toSdr, stillInput, graphFile, pickEncoder, hasLibx265, effectiveExport, makeScene, needsProxy, usableCopyFile, makeProxy, makeLightProxy, makeQualityProxy, ffmpegPath, ffprobePath, probe, lookFilters, fitSize, narrowClip, buildExportArgs, buildAudioExportArgs, exportAudio, runExport, toM4a, renderMainAudio, renderTimelineAudio, detectSilences, makeVisuals, parseProgressValues, createProgressParser };

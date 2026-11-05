@@ -1232,6 +1232,22 @@ export function previewPathFor(m, quality) {
 }
 export const previewPath = (m, quality = playbackQuality) => previewPathFor(m, quality);
 
+// Mirror of electron/ffmpeg.cjs needsProxy (scripts/test-preview-copies.mjs asserts the two
+// agree over a fixture table): true when the player cannot be trusted to show this file
+// directly — an undecodable codec/pixel format/profile, HDR, a picture above 1080p, or a
+// container Chromium cannot be trusted to demux (QA audit #2, 2026-11-05, RC1) — so a
+// preview copy is required before the stage can show the clip.
+export const PREVIEW_HOSTILE_EXTS = ['mkv', 'avi', 'ts', 'm2ts', 'mts', 'flv', 'wmv', 'mpg', 'mpeg', 'vob', 'asf', 'divx', 'rm', 'rmvb'];
+export function needsPreviewCopy(m) {
+  if (!m || m.type !== 'video') return false;
+  const ext = String(m.path || '').split('.').pop().toLowerCase();
+  if (PREVIEW_HOSTILE_EXTS.includes(ext)) return true;
+  const okCodec = ['h264', 'vp8', 'vp9', 'av1'].includes(m.vcodec);
+  const okPix = ['yuv420p', 'yuvj420p'].includes(m.pixFmt);
+  const big = (m.width || 0) * (m.height || 0) > 1920 * 1088;
+  return !!m.hdr || !okCodec || !okPix || big || /high 10|4:2:2|4:4:4/i.test(m.profile || '');
+}
+
 // Player view zoom (session-only view state; never saved to the project, never touches export).
 // `z` is relative to the Fit size, (x, y) the pan in screen px, `fit` marks the Fit menu choice.
 export const ZOOM_MIN = 0.25;

@@ -49,7 +49,7 @@ contextBridge.exposeInMainWorld('api', {
   soundzaPreview: (item) => ipcRenderer.invoke('soundza:preview', item),
   libraryFile: (item) => ipcRenderer.invoke('library:file', item),
   libraryAdd: (item) => ipcRenderer.invoke('library:add', item),
-  ensureVisuals: (items) => ipcRenderer.invoke('media:ensureVisuals', items),
+  ensureVisuals: (items, opts) => ipcRenderer.invoke('media:ensureVisuals', items, opts),
   colorSample: (item, from, to) => ipcRenderer.invoke('color:sample', item, from, to),
   stabilizeRun: (item, from, to, level) => ipcRenderer.invoke('stabilize:run', item, from, to, level),
   reverseRun: (item, from, to) => ipcRenderer.invoke('reverse:run', item, from, to),

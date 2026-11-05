@@ -495,6 +495,418 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'mkvdiag') {
+    // Focused diagnostic for the f11-h264.mkv anomaly in the blackmatrix run: the main
+    // slot reported readyState 4 / videoWidth 640 / advancing currentTime yet painted
+    // black, while a fresh overlay element seemed to show a frame. Question: can this
+    // Chromium decode the file at all, and is the main-slot swap machinery involved?
+    // Evidence: per-element getVideoPlaybackQuality (frames actually decoded/dropped),
+    // drawImage stats, and capturePage stage-region pixels via nativeImage (what the
+    // compositor really shows), for (a) a bare <video> created in the page, (b) the
+    // app's main slot, (c) a fresh overlay element — same file, same session.
+    const q = run;
+    const until = async (js, ms = 20000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { nativeImage } = require('electron');
+    const file = process.env.FVE_MATRIX_FILE || '/home/hatch/workspace/clipcraft-qa-2/fixtures/f11-h264.mkv';
+    const sampleEl = (expr) => `(() => {
+      const v = ${expr};
+      if (!v) return { found: false };
+      const out = { found: true, src: (v.currentSrc || '').split('/').pop(), readyState: v.readyState,
+        videoWidth: v.videoWidth, currentTime: +v.currentTime.toFixed(2), paused: v.paused,
+        error: v.error ? v.error.code : null };
+      try { const pq = v.getVideoPlaybackQuality(); out.frames = { total: pq.totalVideoFrames, dropped: pq.droppedVideoFrames }; } catch (e) { out.pqError = e.message; }
+      try {
+        const cv = document.createElement('canvas'); cv.width = 48; cv.height = 48;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(v, 0, 0, 48, 48);
+        const all = ctx.getImageData(0, 0, 48, 48).data;
+        let lit = 0; for (let i = 0; i < all.length; i += 4) if (Math.max(all[i], all[i + 1], all[i + 2]) > 24) lit++;
+        out.nonblack = +(lit / (48 * 48)).toFixed(3);
+      } catch (e) { out.sampleError = e.message; }
+      return out;
+    })()`;
+    try {
+      await wait(800);
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => /Start creating/.test(x.textContent)); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(500);
+      // (a) bare element, straight file URL, no app machinery.
+      const url = 'file://' + file;
+      await q(`(() => { const v = document.createElement('video'); v.id = 'bare-v'; v.muted = true; v.preload = 'auto'; v.src = ${JSON.stringify(url)}; document.body.appendChild(v); return true; })()`);
+      await q(`document.querySelector('#bare-v').currentTime = 2`);
+      await wait(3000);
+      result.barePaused = await q(sampleEl(`document.querySelector('#bare-v')`));
+      await q(`document.querySelector('#bare-v').play().catch(() => {})`);
+      await wait(2500);
+      result.barePlayed = await q(sampleEl(`document.querySelector('#bare-v')`));
+      // (b) app main slot.
+      const items = await q(`window.api.probePaths(${JSON.stringify([file])})`);
+      const item = { ...items[0], id: 'm0' };
+      const dur = Math.max(1, item.duration || 6);
+      const p = {
+        name: 'MKV diag', ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+        media: [item], videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: dur, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await q(`window.__fve.seek(2)`);
+      await wait(3000);
+      result.mainPaused = await q(sampleEl(`document.querySelector('.stage .slot:not(.ov) video')`));
+      await q(`window.__fve.play()`);
+      await wait(2500);
+      await q(`window.__fve.pause()`);
+      result.mainPlayed = await q(sampleEl(`document.querySelector('.stage .slot:not(.ov) video')`));
+      // Stage-region pixels from the compositor itself (centre of the stage element).
+      const rect = await q(`(() => { const r = document.querySelector('.stage').getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+      const img = await win.capturePage();
+      const bmp = img.toBitmap(); const size = img.getSize();
+      let lit = 0, tot = 0;
+      const x0 = Math.floor(rect.x + rect.w * 0.3), x1 = Math.floor(rect.x + rect.w * 0.7);
+      const y0 = Math.floor(rect.y + rect.h * 0.3), y1 = Math.floor(rect.y + rect.h * 0.7);
+      for (let y = y0; y < y1; y += 3) for (let x = x0; x < x1; x += 3) {
+        const o = (y * size.width + x) * 4; tot++;
+        if (Math.max(bmp[o + 2], bmp[o + 1], bmp[o]) > 24) lit++; // BGRA order
+      }
+      result.stageRegion = { nonblack: +(lit / tot).toFixed(3), rect };
+      fs.writeFileSync(path.join(dir, 'stage.png'), img.toPNG());
+      // (c) fresh overlay element in the app (same project + overlay of the same file).
+      const p2 = { ...p, name: 'MKV diag ov', overlayClips: [{ id: 'ov1', mediaId: 'm0', in: 0, out: dur, start: 0, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null, transform: { scale: 0.6, x: 0, y: 0 } }] };
+      await q(`window.__fve.load(${JSON.stringify(p2)})`);
+      await q(`window.__fve.seek(2)`);
+      await wait(3000);
+      result.ovPaused = await q(sampleEl(`document.querySelector('.slot.ov video')`));
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'mkvdiag.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'sweep2') {
+    // Full-sweep hands-on pass (QA audit #2, 2026-11-05): the areas the black matrix
+    // does not cover, exercised in the real app — panel import/add, timeline ops with
+    // undo/redo, layer lock/hide, effects on the stage, a text clip rendered on the
+    // text layer, extract audio, the Captions tab (1.1.4 panel + 1.1.5 transcript),
+    // CraftAI + Stock panels, the About/update check, a save/load round-trip, and an
+    // everything-export verified on the output file (streams, duration, blackdetect,
+    // audio level) rather than on exit codes.
+    const q = run;
+    const until = async (js, ms = 20000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    const S = {};
+    result.steps = S;
+    const proj = () => q(`window.__fve.exportData().project`);
+    const dismiss = () => q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /Start creating|Skip tour/.test(x.textContent)); if (b) b.click(); return !!b; })()`).catch(() => {});
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const clipB = path.join(mediaDir, 'bars.mp4');
+      if (!fs.existsSync(clipB)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'smptebars=size=640x360:rate=30:duration=6',
+          '-f', 'lavfi', '-i', 'sine=frequency=330:duration=6', '-shortest', '-pix_fmt', 'yuv420p', clipB]);
+      }
+      const srcA = '/home/hatch/workspace/clipcraft-qa-2/fixtures/f01-h264.mp4';
+      await wait(800);
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      S.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await dismiss();
+      await wait(400);
+      // S1: import through the real probe path, then add via the media panel's own buttons.
+      const items = await q(`window.api.probePaths(${JSON.stringify([srcA, clipB])})`);
+      const media = items.map((m, i) => ({ ...m, id: `m${i}` }));
+      await q(`window.__fve.load(${JSON.stringify({
+        name: 'Sweep', ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+        media, videoClips: [], overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      })})`);
+      await dismiss();
+      await wait(600);
+      S.panelCards = await q(`document.querySelectorAll('.asset').length`);
+      await q(`document.querySelectorAll('.asset .asset-add:not(.overlay)')[0].click()`);
+      S.add1Landed = await until(`window.__fve.exportData().project.videoClips.length === 1`, 10000);
+      await q(`document.querySelectorAll('.asset .asset-add:not(.overlay)')[1].click()`);
+      await wait(600);
+      // A format mismatch opens the SequenceDialog by design (guardAdd): record it
+      // and answer "Keep current settings", after which the add must proceed.
+      S.seqDialog = await q(`(() => { const d = document.querySelector('.seq-dialog, [role=dialog]'); return d ? d.innerText.slice(0, 200) : null; })()`);
+      await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /Keep current settings/.test(x.textContent)); if (b) b.click(); return !!b; })()`);
+      S.add2Landed = await until(`window.__fve.exportData().project.videoClips.length === 2`, 10000);
+      let p = await proj();
+      S.afterPanelAdd = { clips: p.videoClips.length, dur: +p.videoClips.reduce((s, c) => s + (c.out - c.in), 0).toFixed(2) };
+      // S2: timeline ops through the same actions the UI dispatches.
+      const v0 = p.videoClips[0].id;
+      await q(`window.__fve.dispatch({ type: 'split', track: 'video', id: ${JSON.stringify(v0)}, t: 2, newId: 'sp1' })`);
+      p = await proj();
+      S.afterSplit = p.videoClips.length;
+      const second = p.videoClips[1];
+      await q(`window.__fve.dispatch({ type: 'trimClip', track: 'video', id: ${JSON.stringify(second.id)}, edge: 'left', delta: 1 })`);
+      p = await proj();
+      const trimmed = p.videoClips.find((c) => c.id === second.id);
+      S.afterTrim = { len: +(trimmed.out - trimmed.in).toFixed(2), in: trimmed.in };
+      await q(`window.__fve.dispatch({ type: 'duplicate', track: 'video', id: ${JSON.stringify(second.id)}, newId: 'dup1' })`);
+      p = await proj();
+      S.afterDuplicate = p.videoClips.length;
+      await q(`window.__fve.dispatch({ type: 'delete', track: 'video', id: 'dup1' })`);
+      p = await proj();
+      S.afterDelete = p.videoClips.length;
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      p = await proj();
+      S.afterUndo = p.videoClips.length;
+      await q(`window.__fve.dispatch({ type: 'redo' })`);
+      p = await proj();
+      S.afterRedo = p.videoClips.length;
+      // Layer lock refuses edits; hide removes the picture from the stage.
+      await q(`window.__fve.dispatch({ type: 'setLayerState', track: 'video', layer: 0, patch: { locked: true } })`);
+      const beforeLock = (await proj()).videoClips.map((c) => c.out - c.in).join(',');
+      await q(`window.__fve.dispatch({ type: 'trimClip', track: 'video', id: ${JSON.stringify(second.id)}, edge: 'left', delta: 1 })`);
+      const afterLock = (await proj()).videoClips.map((c) => c.out - c.in).join(',');
+      S.lockRefusesTrim = beforeLock === afterLock;
+      await q(`window.__fve.dispatch({ type: 'setLayerState', track: 'video', layer: 0, patch: { locked: false, hidden: true } })`);
+      await q(`window.__fve.seek(1)`);
+      await wait(700);
+      S.hiddenSlotVisibility = await q(`(() => { const s = document.querySelector('.stage .slot:not(.ov)'); return s ? getComputedStyle(s).visibility : null; })()`);
+      await q(`window.__fve.dispatch({ type: 'setLayerState', track: 'video', layer: 0, patch: { hidden: false } })`);
+      // S3: an effect on the stage (blur) — the picture must still be there, changed.
+      const firstId = (await proj()).videoClips[0].id;
+      await q(`window.__fve.dispatch({ type: 'update', track: 'video', id: ${JSON.stringify(firstId)}, patch: { effects: ['blur'] } })`);
+      await q(`window.__fve.seek(1)`);
+      await wait(900);
+      S.blurStage = await q(`(() => { const v = document.querySelector('.stage .slot:not(.ov) video'); const cv = document.querySelector('.stage .slot:not(.ov) canvas.keyed');
+        const el = (cv && getComputedStyle(cv).display !== 'none') ? cv : v; if (!el) return null;
+        const c2 = document.createElement('canvas'); c2.width = 32; c2.height = 32; const ctx = c2.getContext('2d', { willReadFrequently: true });
+        try { ctx.drawImage(el, 0, 0, 32, 32); const d = ctx.getImageData(0, 0, 32, 32).data; let lit = 0; for (let i = 0; i < d.length; i += 4) if (Math.max(d[i], d[i + 1], d[i + 2]) > 24) lit++; return { from: el.tagName, nonblack: +(lit / 1024).toFixed(2) }; } catch (e) { return { error: e.message }; } })()`);
+      await shot('sw-1-blur.png');
+      // S4: extract audio (store action behind the clip menu) + a text clip on the text layer.
+      await q(`window.__fve.dispatch({ type: 'extractAudio', track: 'video', id: ${JSON.stringify(firstId)}, newId: 'xa1' })`);
+      p = await proj();
+      S.afterExtract = { audioClips: p.audioClips.length, muted: p.videoClips.find((c) => c.id === firstId)?.muted === true };
+      await q(`window.__fve.dispatch({ type: 'addText', clipId: 'tx1', at: 0, patch: { text: 'SWEEP', duration: 3 } })`);
+      await q(`window.__fve.seek(1)`);
+      await wait(900);
+      S.textPixels = await q(`(() => { const cv = document.querySelector('.stage canvas.text-layer'); if (!cv) return null; const ctx = cv.getContext('2d', { willReadFrequently: true }); const d = ctx.getImageData(0, 0, cv.width, cv.height).data; let lit = 0; for (let i = 3; i < d.length; i += 16) if (d[i] > 0) lit++; return { w: cv.width, h: cv.height, alphaPx: lit }; })()`);
+      await shot('sw-2-text.png');
+      // S5: Captions tab — the 1.1.4 Subtitles panel and the 1.1.5 Transcript card render.
+      await q(`window.__fve.tab('captions')`);
+      await wait(800);
+      S.captionsPanel = await q(`(() => { const t = document.querySelector('.library')?.innerText || ''; return { hasSubtitles: /Subtitles/.test(t), hasTranscript: /Transcript/.test(t), hasSilences: /silence/i.test(t), slice: t.slice(0, 160) }; })()`);
+      await shot('sw-3-captions.png');
+      // S6: CraftAI panel opens and renders its honest state.
+      await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /CraftAI/.test(x.textContent)); if (b) b.click(); return !!b; })()`);
+      await wait(1200);
+      S.craftPanel = await q(`(() => { const el = document.querySelector('.pilot, .craft-panel, [class*=pilot]'); return el ? el.innerText.slice(0, 200) : null; })()`);
+      await shot('sw-4-craft.png');
+      await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /CraftAI/.test(x.textContent)); if (b) b.click(); return !!b; })()`).catch(() => {});
+      // S7: Stock sub-tab renders (live results need network; the honest state is the check).
+      await q(`window.__fve.tab('media')`);
+      await wait(500);
+      await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Stock'); if (b) b.click(); return !!b; })()`);
+      await wait(2500);
+      S.stockPanel = await q(`(document.querySelector('.library')?.innerText || '').slice(0, 220)`);
+      await shot('sw-5-stock.png');
+      // S8: About + update check.
+      await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'About'); if (b) b.click(); return !!b; })()`);
+      await wait(900);
+      S.aboutText = await q(`(document.querySelector('.about-dialog, [role=dialog]')?.innerText || '').slice(0, 300)`);
+      await q(`(() => { const b = [...document.querySelectorAll('button')].find((x) => /Check for updates/i.test(x.textContent)); if (b) b.click(); return !!b; })()`);
+      await wait(3500);
+      S.updateText = await q(`(document.querySelector('.about-dialog, [role=dialog]')?.innerText || '').slice(0, 400)`);
+      await shot('sw-6-about.png');
+      await q(`(() => { const b = document.querySelector('.about-dialog .x, [role=dialog] .x'); if (b) b.click(); })()`).catch(() => {});
+      await q(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`).catch(() => {});
+      // S9: save/load round-trip through normalize.
+      const snap = await proj();
+      const counts = { media: snap.media.length, video: snap.videoClips.length, audio: snap.audioClips.length, text: snap.textClips.length };
+      await q(`window.__fve.load(${JSON.stringify(JSON.parse(JSON.stringify(snap)))})`);
+      await wait(500);
+      const snap2 = await proj();
+      S.roundTrip = { before: counts, after: { media: snap2.media.length, video: snap2.videoClips.length, audio: snap2.audioClips.length, text: snap2.textClips.length } };
+      // S10: the everything-export, verified on the output file.
+      const rich = await proj();
+      result.finalClips = rich.videoClips.map((c) => ({ id: c.id, mediaId: c.mediaId, in: c.in, out: c.out, gap: !!c.gap, speed: c.speed || 1 }));
+      result.finalLayoutEnd = +rich.videoClips.reduce((s, c) => s + (c.out - c.in) / (c.speed || 1), 0).toFixed(2);
+      const out = path.join(dir, 'ui-export.mp4');
+      await runExport(rich, out, null).promise;
+      const info = await probe(out);
+      const { spawnSync } = require('child_process');
+      const bd = spawnSync(ff, ['-hide_banner', '-i', out, '-vf', 'blackdetect=d=1:pix_th=0.1', '-an', '-f', 'null', '-'], { encoding: 'utf8' });
+      const as = spawnSync(ff, ['-hide_banner', '-i', out, '-vn', '-af', 'astats=metadata=1', '-f', 'null', '-'], { encoding: 'utf8' });
+      S.export = {
+        duration: +info.duration.toFixed(2), vcodec: info.vcodec, acodec: info.acodec,
+        blackSegments: ((bd.stderr || '').match(/black_start/g) || []).length,
+        audioRmsDb: ((as.stderr || '').match(/RMS level dB: (-?[\d.]+)/) || [])[1] || null,
+      };
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'blackmatrix') {
+    // Black-preview matrix (QA audit #2, 2026-11-05): Hamza gets a black stage when he
+    // puts a video on the MAIN timeline. Every codec/container shape a user can import
+    // is driven through the REAL import path (window.api.probePaths -> main queueVisuals
+    // -> proxies), placed on the main track and then on the overlay track, and the proof
+    // is read off the actual <video> elements: drawImage pixel stats (testsrc2 is never
+    // black, so a decoded frame is unmistakable) + readyState / error / videoWidth /
+    // currentSrc. Samples: early (before any preview copy can land), paused seek, after
+    // real playback, scrub. Special cases: proxy generation blocked (a directory sits at
+    // the copy's cache path, so makeProxy must fail), saved+reopened project, and a saved
+    // project whose preview-copy pointer is dead.
+    const q = run;
+    const until = async (js, ms = 20000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const fxDir = process.env.FVE_MATRIX_DIR || '/home/hatch/workspace/clipcraft-qa-2/fixtures';
+    const cases = (process.env.FVE_MATRIX_CASES || fs.readdirSync(fxDir).filter((f) => /^f\d+-/.test(f)).sort().join(',')).split(',').filter(Boolean);
+    const sampleJs = (sel) => `(() => {
+      const v = document.querySelector('${sel}');
+      if (!v) return { found: false };
+      const out = { found: true, src: (v.currentSrc || v.getAttribute('src') || '').split('/').pop(),
+        readyState: v.readyState, videoWidth: v.videoWidth, videoHeight: v.videoHeight,
+        currentTime: +v.currentTime.toFixed(3), paused: v.paused,
+        error: v.error ? v.error.code : null, networkState: v.networkState,
+        stageNote: (document.querySelector('.stage-note')?.innerText || document.querySelector('.stage-chip')?.innerText || '').trim() || null };
+      try {
+        const cv = document.createElement('canvas'); cv.width = 48; cv.height = 48;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(v, 0, 0, 48, 48);
+        const all = ctx.getImageData(0, 0, 48, 48).data;
+        let r = 0, g = 0, b = 0, lit = 0;
+        for (let i = 0; i < all.length; i += 4) { r += all[i]; g += all[i + 1]; b += all[i + 2]; if (Math.max(all[i], all[i + 1], all[i + 2]) > 24) lit++; }
+        const n = 48 * 48;
+        out.mean = [+((r / n)).toFixed(1), +((g / n)).toFixed(1), +((b / n)).toFixed(1)];
+        out.nonblack = +(lit / n).toFixed(3);
+      } catch (e) { out.sampleError = e.message; }
+      return out;
+    })()`;
+    const mediaOf = (id) => `window.__fve.exportData().project.media.find((m) => m.id === '${id}')`;
+    try {
+      await wait(800);
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(500);
+      result.cases = {};
+      // Solid dark-blue h264 clip used as the known-good picture under overlay tests.
+      const { execFileSync } = require('child_process');
+      const ff = require('./ffmpeg.cjs').ffmpegPath;
+      const underSrc = path.join(dir, 'under.mp4');
+      if (!fs.existsSync(underSrc)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=0x102040:size=640x360:rate=30:duration=6',
+          '-f', 'lavfi', '-i', 'sine=frequency=220:duration=6', '-shortest', '-pix_fmt', 'yuv420p', underSrc]);
+      }
+      const underItems = await q(`window.api.probePaths(${JSON.stringify([underSrc])})`);
+      for (const name of cases) {
+        const file = path.join(fxDir, name);
+        const C = { file: name };
+        result.cases[name] = C;
+        try {
+          const blocked = (process.env.FVE_MATRIX_BLOCKPROXY || '').split(',').includes(name);
+          if (blocked) {
+            // Deterministic copy-generation failure: a directory where the preview
+            // copy file must land (key recipe mirrors electron/ffmpeg.cjs makeProxy).
+            const st = fs.statSync(file);
+            const key = require('crypto').createHash('sha1').update(`${file}|${st.size}|${st.mtimeMs}|proxy1`).digest('hex').slice(0, 16);
+            fs.mkdirSync(path.join(dir, 'media-cache-test', `${key}-proxy.mp4`), { recursive: true });
+            C.proxyBlocked = `${key}-proxy.mp4`;
+          }
+          const t0 = Date.now();
+          const items = await q(`window.api.probePaths(${JSON.stringify([file])})`);
+          const item = { ...items[0], id: 'm0' };
+          C.probe = { vcodec: item.vcodec, pixFmt: item.pixFmt, profile: item.profile, w: item.width, h: item.height, rot: item.rotation || 0, dur: +(+item.duration).toFixed(2) };
+          const { needsProxy: np } = require('./ffmpeg.cjs');
+          C.needsProxy = np(item);
+          const dur = Math.max(1, item.duration || 6);
+          const mk = (extra) => ({
+            name: `Matrix ${name}`, ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+            media: [item], videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: dur, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+            overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [], ...extra,
+          });
+          await q(`window.__fve.load(${JSON.stringify(mk())})`);
+          await q(`window.__fve.seek(2)`);
+          await wait(1500);
+          C.early = await q(sampleJs('.stage .slot:not(.ov) video'));
+          // Wait for the preview copy to land (or give up): poll the media item.
+          // Cases that need no copy settle in seconds; the failure case (f18) settles
+          // when the item reports proxyFailed.
+          const want = C.needsProxy ? 90000 : 8000;
+          C.proxyLanded = await until(`(() => { const m = ${mediaOf('m0')}; return !!(m && (typeof m.proxy === 'string' || m.proxyFailed)); })()`, want);
+          C.proxyWaitMs = Date.now() - t0;
+          const mLate = await q(`(() => { const m = ${mediaOf('m0')}; return m ? { proxy: typeof m.proxy === 'string' ? m.proxy.split('/').pop() : m.proxy, optimizing: !!m.optimizing, proxyFailed: !!m.proxyFailed } : null; })()`);
+          C.mediaLate = mLate;
+          await q(`window.__fve.seek(2)`);
+          await until(`(() => { const v = document.querySelector('.stage .slot:not(.ov) video'); return v && v.readyState >= 2; })()`, 8000);
+          await wait(500);
+          C.paused2 = await q(sampleJs('.stage .slot:not(.ov) video'));
+          // Real playback: from 1 s, let it run, pause, sample.
+          await q(`window.__fve.seek(1); window.__fve.play()`);
+          C.playAdvanced = await until(`(() => { const v = document.querySelector('.stage .slot:not(.ov) video'); return v && !v.paused && v.currentTime > 2.1; })()`, 10000);
+          await q(`window.__fve.pause()`);
+          await wait(400);
+          C.played = await q(sampleJs('.stage .slot:not(.ov) video'));
+          // Scrub near the end.
+          const tEnd = Math.max(2.5, dur - 1.1);
+          await q(`window.__fve.seek(${tEnd})`);
+          await until(`(() => { const v = document.querySelector('.stage .slot:not(.ov) video'); return v && v.readyState >= 2; })()`, 8000);
+          await wait(400);
+          C.scrubEnd = await q(sampleJs('.stage .slot:not(.ov) video'));
+          if (C.mediaLate && C.mediaLate.proxyFailed) {
+            // Failure must SETTLE: no retry loop, the failed state and the stage note
+            // are identical 6 s later, and no copy file appears in the cache.
+            await wait(6000);
+            const again = await q(`(() => { const m = ${mediaOf('m0')}; return m ? { proxy: typeof m.proxy === 'string' ? m.proxy.split('/').pop() : m.proxy, optimizing: !!m.optimizing, proxyFailed: !!m.proxyFailed } : null; })()`);
+            const noteAgain = await q(sampleJs('.stage .slot:not(.ov) video'));
+            C.settled = { media: again, stageNote: noteAgain && noteAgain.stageNote };
+          }
+          if (C.paused2 && C.paused2.nonblack < 0.5) await shot(`mx-${name.replace(/\W/g, '_')}-main.png`);
+          if (name === 'f02-hevc.mp4') {
+            // Saved + reopened: persist the MAIN project exactly as the app has it now
+            // (copy pointers included), reload it, and sample the main slot again.
+            const saved = await q(`window.__fve.exportData().project`);
+            await q(`window.__fve.load(${JSON.stringify(saved)})`);
+            await q(`window.__fve.seek(2)`);
+            await until(`(() => { const v = document.querySelector('.stage .slot:not(.ov) video'); return v && v.readyState >= 2; })()`, 8000);
+            await wait(500);
+            C.reopened = await q(sampleJs('.stage .slot:not(.ov) video'));
+            // Dead pointer variant: the saved preview-copy path no longer exists.
+            const dead = JSON.parse(JSON.stringify(saved));
+            const dm = dead.media.find((m) => m.id === 'm0');
+            if (dm && typeof dm.proxy === 'string') {
+              dm.proxy = path.join(dir, 'media-cache-test', 'deadbeefdeadbeef-proxy.mp4');
+              await q(`window.__fve.load(${JSON.stringify(dead)})`);
+              await q(`window.__fve.seek(2)`);
+              await wait(1500);
+              C.deadEarly = await q(sampleJs('.stage .slot:not(.ov) video'));
+              C.deadHealed = await until(`(() => { const m = ${mediaOf('m0')}; return !!(m && typeof m.proxy === 'string' && !m.proxy.includes('deadbeef')); })()`, 60000);
+              await q(`window.__fve.seek(2)`);
+              await until(`(() => { const v = document.querySelector('.stage .slot:not(.ov) video'); return v && v.readyState >= 2; })()`, 8000);
+              await wait(500);
+              C.deadLate = await q(sampleJs('.stage .slot:not(.ov) video'));
+            }
+          }
+          // Overlay track: same file as a full-frame overlay over the known-good clip.
+          const under = { ...underItems[0], id: 'mu' };
+          const po = {
+            name: `Matrix OV ${name}`, ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+            media: [under, item],
+            videoClips: [{ id: 'v1', mediaId: 'mu', in: 0, out: 6, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+            overlayClips: [{ id: 'ov1', mediaId: 'm0', in: 0, out: dur, start: 0, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null, transform: { scale: 1, x: 0, y: 0 } }],
+            audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+          };
+          await q(`window.__fve.load(${JSON.stringify(po)})`);
+          await q(`window.__fve.seek(2)`);
+          await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && v.readyState >= 2; })()`, 8000);
+          await wait(500);
+          C.overlay2 = await q(sampleJs('.slot.ov video'));
+        } catch (e) {
+          C.error = e.message;
+        }
+        fs.writeFileSync(path.join(dir, 'matrix.json'), JSON.stringify(result, null, 2));
+      }
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'matrix.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'transcript') {
     // Transcript editing + silence removal (v1.1.5): a synthetic talking-head
     // fixture — 24 s of tone bursts standing in for speech, separated by
