@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Anvil, ArrowLeftRight, Blend, Captions as CaptionsIcon, Contrast, Film, FolderOpen, ImagePlus, Mic, Music, Plus, SlidersHorizontal,
+  Anvil, ArrowLeftRight, Blend, Captions as CaptionsIcon, Contrast, Film, FolderOpen, ImagePlus, Mic, Music, Plus, Scissors, SlidersHorizontal,
   Loader2, Sparkles, Square, Trash2, Type, Upload, WandSparkles, X,
   Layers, ChevronDown, ChevronRight, ChevronUp, Sparkles as SparklesIcon, Award, FolderPlus, MonitorUp, History, UserRound, Users, LayoutTemplate,
 } from 'lucide-react';
@@ -19,7 +19,8 @@ import {
 } from '../text/userTemplates.js';
 import { BUNDLED_LUTS } from '../fx/lut.js';
 import { loadLutLibrary, saveLutLibrary, addLutEntry, removeLutEntry } from '../fx/lutlib.js';
-import { formatTime, getPlaybackQuality, levelCopyState, previewPath, proxyPrefOn, toFileUrl, uid } from '../store.js';
+import { formatTime, getPlaybackQuality, levelCopyState, previewPath, projectDuration, proxyPrefOn, toFileUrl, uid } from '../store.js';
+import { flatWords, rangesSeconds, selectionCutRanges, sentenceRange, silenceCutRanges, transcriptSentences } from '../transcript.js';
 import { COLLECTIONS, PACKS, COLLECTION_ITEMS, loadFavorites, saveFavorites, toggleFavorite } from '../fx/collections.js';
 import { parseSRT, regroupSegments } from '../subtitles.js';
 import { DEFAULT_ADJUST, EFFECTS, EFFECT_GROUPS, FILTERS, TRANSITIONS } from '../effects.js';
@@ -523,6 +524,147 @@ const CAPTION_MODELS = [
   { id: 'darija', name: 'Moroccan Darija (whisper-medium-darija)', size: '540 MB', arabicOnly: true },
 ];
 
+// Transcript editing (v1.1.5): the captions read as one flowing transcript.
+// Selecting words and cutting them cuts that stretch of the video itself —
+// one cutRanges dispatch with text ripple, so the captions after the cut
+// shift along with the picture and the whole edit is a single undo step.
+// The silence finder runs the main process's detector over the main track's
+// real audio mix (the same one the assistant uses) and lists what it found
+// before anything is removed.
+const TX_RENDER_CAP = 150; // sentences drawn at once; the rest is a note away
+function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
+  const sentences = transcriptSentences(project);
+  const words = flatWords(sentences);
+  const [sel, setSel] = useState(null); // { from, to } flat word indices
+  const anchor = useRef(null);
+  const [silDb, setSilDb] = useState(-35);
+  const [silMin, setSilMin] = useState(0.4);
+  const [silPad, setSilPad] = useState(0.1);
+  const [sil, setSil] = useState(null); // { busy } | { list, ranges } | { error }
+  // A selection only means something against the captions it was made on.
+  useEffect(() => { setSel(null); anchor.current = null; }, [project.textClips]);
+  if (!sentences.length) {
+    return (
+      <div className="card tx-card">
+        <b>Transcript</b>
+        <p className="muted">Generate captions first — the words appear here as a transcript, and cutting words here cuts the video. Silence removal lives here too.</p>
+      </div>
+    );
+  }
+  const selRanges = sel ? selectionCutRanges(words, sel.from, sel.to) : [];
+  const selSecs = rangesSeconds(selRanges);
+  const pickWord = (gi, w, e) => {
+    if (e.shiftKey && anchor.current != null) setSel({ from: anchor.current, to: gi });
+    else {
+      anchor.current = gi;
+      setSel({ from: gi, to: gi });
+      onSeek?.(w.start);
+      onSelect?.({ track: 'text', id: w.clipId });
+    }
+  };
+  const cutSelection = () => {
+    if (!selRanges.length) return;
+    dispatch({ type: 'cutRanges', ranges: selRanges, rippleText: true });
+    setSel(null);
+    anchor.current = null;
+  };
+  const findSilences = async () => {
+    setSil({ busy: true });
+    const res = await window.api.agentSilences(project, { minDur: silMin, noiseDb: silDb });
+    if (!res || !res.ok) { setSil({ error: (res && res.error) || 'Silence detection failed.' }); return; }
+    setSil({ list: res.silences, ranges: silenceCutRanges(res.silences, silPad, projectDuration(project)) });
+  };
+  const removeSilences = () => {
+    if (!sil?.ranges?.length) return;
+    dispatch({ type: 'cutRanges', ranges: sil.ranges, rippleText: true });
+    setSil(null);
+  };
+  const shown = sentences.slice(0, TX_RENDER_CAP);
+  let gi = -1;
+  return (
+    <div className="card tx-card">
+      <div className="sub-panel-head">
+        <b>Transcript</b>
+        <span className="muted small">{sentences.length} sentence{sentences.length > 1 ? 's' : ''}</span>
+      </div>
+      <p className="muted small">Click a word to select it, Shift-click to extend the selection, then cut — the video closes up and later captions shift with it. One undo brings it all back.</p>
+      <div className="tx-body" dir="auto">
+        {shown.map((s) => (
+          <p key={s.clipId} className="tx-sentence">
+            <button type="button" className="tx-time" title="Go to this sentence"
+              onClick={() => { onSeek?.(s.start); onSelect?.({ track: 'text', id: s.clipId }); }}>
+              {formatTime(s.start)}
+            </button>
+            {s.words.map((w) => {
+              gi += 1;
+              const mine = gi;
+              const on = sel && mine >= Math.min(sel.from, sel.to) && mine <= Math.max(sel.from, sel.to);
+              return (
+                <span key={mine} className={`tx-word ${on ? 'on' : ''}`} onClick={(e) => pickWord(mine, w, e)}>
+                  {w.text}{' '}
+                </span>
+              );
+            })}
+            <button type="button" className="tx-cut-sentence" title="Cut this sentence from the video" aria-label="Cut this sentence"
+              onClick={() => dispatch({ type: 'cutRanges', ranges: [sentenceRange(s)], rippleText: true })}>
+              <Scissors size={12} />
+            </button>
+          </p>
+        ))}
+      </div>
+      {sentences.length > TX_RENDER_CAP && <p className="muted small">Showing the first {TX_RENDER_CAP} sentences.</p>}
+      <div className="tx-actions">
+        <button className="btn btn-sm" disabled={!selRanges.length} onClick={cutSelection}>
+          <Scissors size={14} /> Cut selected{selRanges.length ? ` · ${selSecs.toFixed(1)} s` : ''}
+        </button>
+        {sel && <button className="btn btn-sm btn-ghost" onClick={() => { setSel(null); anchor.current = null; }}>Clear selection</button>}
+      </div>
+      <div className="tx-silences">
+        <b className="small">Silences</b>
+        <label className="field">
+          <span>Below <b>{silDb} dB</b> counts as silence</span>
+          <input type="range" min="-50" max="-25" step="1" value={silDb} aria-label="Silence threshold in decibels"
+            onChange={(e) => { setSilDb(Number(e.target.value)); setSil(null); }} />
+        </label>
+        <label className="field">
+          <span>Shortest silence <b>{silMin.toFixed(1)} s</b></span>
+          <input type="range" min="0.3" max="1.5" step="0.1" value={silMin} aria-label="Shortest silence in seconds"
+            onChange={(e) => { setSilMin(Number(e.target.value)); setSil(null); }} />
+        </label>
+        <label className="field">
+          <span>Keep padding <b>{silPad.toFixed(2)} s</b> at both ends</span>
+          <input type="range" min="0" max="0.25" step="0.05" value={silPad} aria-label="Padding kept at both ends of a silence"
+            onChange={(e) => { setSilPad(Number(e.target.value)); setSil(null); }} />
+        </label>
+        <button className="btn btn-sm" disabled={!!sil?.busy || !project.videoClips.length} onClick={findSilences}>
+          {sil?.busy ? 'Listening…' : 'Find silences'}
+        </button>
+        {sil?.error && <p className="error-text small">{sil.error}</p>}
+        {sil?.list && (
+          <>
+            {sil.ranges.length ? (
+              <>
+                <div className="tx-sil-list">
+                  {sil.ranges.slice(0, 10).map((r, i) => (
+                    <div key={i} className="tx-sil-row">
+                      <span>{formatTime(r.start)} – {formatTime(r.end)}</span>
+                      <span className="muted">{(r.end - r.start).toFixed(1)} s</span>
+                    </div>
+                  ))}
+                  {sil.ranges.length > 10 && <p className="muted small">…and {sil.ranges.length - 10} more.</p>}
+                </div>
+                <button className="btn btn-sm btn-primary" onClick={removeSilences}>
+                  <Scissors size={14} /> Remove {sil.ranges.length} silence{sil.ranges.length > 1 ? 's' : ''} · saves {rangesSeconds(sil.ranges).toFixed(1)} s
+                </button>
+              </>
+            ) : <p className="muted small">No silence that long at this threshold — nothing to remove.</p>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CaptionsTab({ onAddText, captions, project, dispatch, onSeek, onSelect }) {
   const [lang, setLang] = useState('auto');
   const [model, setModel] = useState('base');
@@ -752,6 +894,7 @@ function CaptionsTab({ onAddText, captions, project, dispatch, onSeek, onSelect 
         {captions.error && <CaptionError error={captions.error} />}
         {!(project.videoClips.length || project.audioClips.length) && <p className="muted">Add a video or an audio clip to the timeline first.</p>}
       </div>
+      <TranscriptCard project={project} dispatch={dispatch} onSeek={onSeek} onSelect={onSelect} />
       <div className="card">
         <b>Caption style</b>
         <p className="muted">{count ? `Applies to all ${count} captions.` : 'Used when you generate captions.'}</p>

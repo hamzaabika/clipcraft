@@ -2414,6 +2414,22 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .user-tpl-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-3); }
 .user-tpl-row.on { border-color: var(--primary); }
 .user-tpl-name { flex: 1; font-size: 12px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ---- Transcript editing (v1.1.5): word selection, sentence cut, silences ---- */
+.tx-body { max-height: 380px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-3); padding: 8px 10px; margin-bottom: 8px; }
+.tx-sentence { margin: 0 0 8px; line-height: 1.75; font-size: 13px; color: var(--text); }
+.tx-sentence:last-child { margin-bottom: 0; }
+.tx-time { border: none; background: none; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; padding: 0 6px 0 0; vertical-align: baseline; }
+.tx-time:hover { color: var(--primary); }
+.tx-word { cursor: pointer; border-radius: 4px; padding: 1px 1px; }
+.tx-word:hover { background: var(--surface-2); }
+.tx-word.on { background: var(--primary); color: #fff; }
+.tx-cut-sentence { border: none; background: none; color: var(--text-3); cursor: pointer; padding: 2px; vertical-align: middle; opacity: 0; }
+.tx-sentence:hover .tx-cut-sentence { opacity: 1; }
+.tx-cut-sentence:hover { color: var(--danger, #f87171); }
+.tx-actions { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+.tx-silences { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.tx-sil-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
+.tx-sil-row { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; padding: 3px 6px; background: var(--surface-3); border-radius: var(--r-sm); }
 /* Export encoding view: live processed-time readout next to the stage. */
 .x-enc-time { margin-left: auto; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .x-enc-pct { margin-left: 0; }

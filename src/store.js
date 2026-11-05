@@ -584,7 +584,7 @@ function reduceProjectInner(p, a) {
       return { ...p, [key]: [...p[key], { ...a.clip, id: a.newId, start: Math.max(0, a.at) }] };
     }
     case 'cutRanges':
-      return cutRanges(p, a.ranges);
+      return cutRanges(p, a.ranges, { rippleText: !!a.rippleText });
     case 'addMarker':
       return { ...p, markers: [...p.markers, { id: a.id, time: Math.max(0, a.time), label: a.label || '' }].sort((x, y) => x.time - y.time) };
     case 'removeMarker':
@@ -737,33 +737,76 @@ export function trimActions(p, { track, id, t, side, newId }) {
   return actions;
 }
 
+// Subtract sorted, merged cut ranges from one [a, b) interval; returns the
+// surviving pieces in the interval's own coordinates.
+function subtractRanges(a, b, cuts) {
+  let pieces = [[a, b]];
+  for (const r of cuts) {
+    pieces = pieces.flatMap(([x, y]) => {
+      if (r.end <= x || r.start >= y) return [[x, y]];
+      const keep = [];
+      if (r.start > x) keep.push([x, r.start]);
+      if (r.end < y) keep.push([r.end, y]);
+      return keep;
+    });
+  }
+  return pieces;
+}
+
+// Text clips after a ripple cut of the main track (transcript editing, v1.1.5):
+// the cuts are subtracted from every text clip and everything later shifts
+// earlier by the cut length before it, so captions stay locked to the picture
+// they caption. A clip a cut passes through splits into pieces (ids derived
+// like the video pieces); words that touch a cut are dropped, the survivors
+// are re-based to their piece, and a word-timed clip's text is rebuilt from
+// its remaining words — the same convention splitTimed uses.
+function rippleTextClips(textClips, cuts) {
+  const cutBefore = (t) => cuts.reduce((n, r) => n + (t > r.start ? Math.max(0, Math.min(r.end, t) - r.start) : 0), 0);
+  const out = [];
+  for (const c of textClips) {
+    const s = c.start;
+    const e = c.start + c.duration;
+    const pieces = subtractRanges(s, e, cuts).filter(([a, b]) => b - a >= 0.03);
+    if (!pieces.length) continue;
+    pieces.forEach(([a, b], i) => {
+      const start = a - cutBefore(a);
+      const clip = { ...c, id: i ? `${c.id}-r${i}` : c.id, start, duration: b - a };
+      if (c.words && c.words.length) {
+        const kept = c.words
+          .map((w) => ({ ...w, absStart: s + w.start, absEnd: s + w.end }))
+          .filter((w) => w.absStart >= a - 1e-6 && w.absEnd <= b + 1e-6
+            && !cuts.some((r) => w.absStart < r.end - 1e-6 && w.absEnd > r.start + 1e-6));
+        clip.words = kept.map((w) => ({ text: w.text, start: w.absStart - a, end: w.absEnd - a }));
+        clip.text = kept.map((w) => w.text).join(' ');
+      }
+      out.push(clip);
+    });
+  }
+  return out;
+}
+
 // Removes time ranges from the main track and closes the space (ripple). ranges: [{ start, end }] in timeline
-// seconds. Only the main track is cut; music and text keep their own time. Cut pieces get ids
-// derived from the clip id so repeated cuts never collide.
-export function cutRanges(p, ranges) {
+// seconds. Only the main track is cut; music and overlays keep their own time. With
+// opts.rippleText the text clips are cut and shifted along with the picture —
+// the transcript-editing path, where captions must stay in sync with what they
+// caption. Cut pieces get ids derived from the clip id so repeated cuts never collide.
+export function cutRanges(p, ranges, opts = {}) {
   const cuts = [...ranges].filter((r) => r.end - r.start > 0.01).sort((a, b) => a.start - b.start);
   if (!cuts.length) return p;
   const out = [];
   for (const l of videoLayout(p.videoClips)) {
     const c = l.clip;
     const sp = c.speed || 1;
-    let pieces = [[l.start, l.end]];
-    for (const r of cuts) {
-      pieces = pieces.flatMap(([a, b]) => {
-        if (r.end <= a || r.start >= b) return [[a, b]];
-        const keep = [];
-        if (r.start > a) keep.push([a, r.start]);
-        if (r.end < b) keep.push([r.end, b]);
-        return keep;
-      });
-    }
+    const pieces = subtractRanges(l.start, l.end, cuts);
     pieces.filter(([a, b]) => b - a >= 0.03).forEach(([a, b], i) => {
       const id = i ? `${c.id}-c${i}` : c.id;
       if (c.gap) out.push({ ...c, id, in: 0, out: b - a });
       else out.push({ ...c, id, in: c.in + (a - l.start) * sp, out: c.in + (b - l.start) * sp, transition: i ? null : c.transition });
     });
   }
-  return { ...p, videoClips: normalizeGaps(out) };
+  const next = { ...p, videoClips: normalizeGaps(out) };
+  if (opts.rippleText) next.textClips = rippleTextClips(p.textClips, cuts);
+  return next;
 }
 
 // After a split the In animation stays on the left part and the Out animation on the right one.

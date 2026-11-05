@@ -495,6 +495,107 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'transcript') {
+    // Transcript editing + silence removal (v1.1.5): a synthetic talking-head
+    // fixture — 24 s of tone bursts standing in for speech, separated by
+    // silence gaps of known lengths at known positions. Word-timed captions
+    // are injected through the same setCaptions action the transcription
+    // engines feed. The panel is then driven like a user: select words and
+    // cut them, find silences and remove them, undo. Every claim below is a
+    // measured project duration or caption position read back from the store.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'talk.mp4');
+      if (!fs.existsSync(src)) {
+        // parts: [seconds, freq|null] — speech bursts 2-6, 8.5-13, 14-19, 21-24.
+        const parts = [[2, 0], [4, 440], [2.5, 0], [4.5, 550], [1, 0], [5, 440], [2, 0], [3, 550]];
+        const listFile = path.join(mediaDir, 'parts.txt');
+        const lines = [];
+        parts.forEach(([dur, freq], i) => {
+          const w = path.join(mediaDir, `part${i}.wav`);
+          const lav = freq ? `sine=frequency=${freq}:duration=${dur}:sample_rate=44100` : `anullsrc=r=44100:cl=mono`;
+          execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', lav, '-t', String(dur), w]);
+          lines.push(`file '${w}'`);
+        });
+        fs.writeFileSync(listFile, lines.join('\n'));
+        const audio = path.join(mediaDir, 'audio.wav');
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listFile, audio]);
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=24',
+          '-i', audio, '-shortest', '-pix_fmt', 'yuv420p', '-c:a', 'aac', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const p = {
+        name: 'Transcript smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'talk.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 24, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      const dur = () => q(`window.__fve.exportData().project.videoClips.reduce((n, c) => n + (c.out - c.in) / (c.speed || 1), 0)`);
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      result.at = 'load';
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      const segments = [
+        { id: 'tx1', start: 2, end: 6, text: 'alpha bravo charlie', words: [{ text: 'alpha', start: 2, end: 3 }, { text: 'bravo', start: 3, end: 4.5 }, { text: 'charlie', start: 4.5, end: 6 }] },
+        { id: 'tx2', start: 8.5, end: 13, text: 'delta echo', words: [{ text: 'delta', start: 8.5, end: 10.5 }, { text: 'echo', start: 10.5, end: 13 }] },
+        { id: 'tx3', start: 14, end: 19, text: 'foxtrot golf', words: [{ text: 'foxtrot', start: 14, end: 16 }, { text: 'golf', start: 16, end: 19 }] },
+        { id: 'tx4', start: 21, end: 24, text: 'hotel', words: [{ text: 'hotel', start: 21, end: 24 }] },
+      ];
+      await q(`window.__fve.dispatch({ type: 'setCaptions', style: { template: 'cap-classic' }, segments: ${JSON.stringify(segments)} })`);
+      await wait(300);
+      await q(`window.__fve.tab('captions')`);
+      result.at = 'panel';
+      result.sentences = await until(`document.querySelectorAll('.tx-card .tx-sentence').length === 4`, 10000)
+        ? await q(`document.querySelectorAll('.tx-card .tx-sentence').length`) : 0;
+      result.words = await q(`document.querySelectorAll('.tx-card .tx-word').length`);
+      result.before = await dur();
+      await shot('tx-1-panel.png');
+      // Select "bravo charlie" (flat words 1..2) and cut: 3 s of picture goes.
+      await q(`document.querySelectorAll('.tx-card .tx-word')[1].click()`);
+      await q(`document.querySelectorAll('.tx-card .tx-word')[2].dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))`);
+      await wait(200);
+      result.cutBtnLabel = await q(`[...document.querySelectorAll('.tx-actions button')].map((b) => b.textContent.trim()).join(' | ')`);
+      await q(`[...document.querySelectorAll('.tx-actions button')].find((b) => b.textContent.includes('Cut selected')).click()`);
+      await wait(400);
+      result.afterWordCut = await dur();
+      result.captionAfterWordCut = await q(`window.__fve.exportData().project.textClips.find((c) => c.id === 'tx1')?.text`);
+      await shot('tx-2-wordcut.png');
+      // Reload the pristine project and run the silence flow end to end.
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(300);
+      await q(`window.__fve.dispatch({ type: 'setCaptions', style: { template: 'cap-classic' }, segments: ${JSON.stringify(segments)} })`);
+      await wait(300);
+      result.beforeSilence = await dur();
+      await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Find silences').click()`);
+      result.silenceRows = await until(`document.querySelectorAll('.tx-sil-row').length >= 4`, 60000)
+        ? await q(`document.querySelectorAll('.tx-sil-row').length`) : 0;
+      result.removeBtnLabel = await q(`[...document.querySelectorAll('button')].map((b) => b.textContent.trim()).find((t) => t.startsWith('Remove ') && t.includes('saves')) || ''`);
+      await shot('tx-3-silences.png');
+      await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Remove ') && b.textContent.includes('saves')).click()`);
+      await wait(400);
+      result.afterSilenceCut = await dur();
+      const caps = await q(`window.__fve.exportData().project.textClips.filter((c) => c.caption).map((c) => ({ id: c.id, start: Math.round(c.start * 100) / 100, text: c.text }))`);
+      result.captionsAfterSilenceCut = caps;
+      // One undo restores the full 24 s.
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.afterUndo = await dur();
+      await shot('tx-4-done.png');
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'subtitles') {
     // Subtitles panel + user caption templates + export progress (2026-11-05):
     // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap
