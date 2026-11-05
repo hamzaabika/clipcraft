@@ -230,6 +230,14 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('beats:progress', handler);
     return () => ipcRenderer.removeListener('beats:progress', handler);
   },
+  // Caption translation: ({ texts, targetName }) -> { ok, texts, provider } | { canceled } | { error }; progress: { done, total }.
+  translateCaptions: (payload) => ipcRenderer.invoke('translate:captions', payload),
+  translateCancel: () => ipcRenderer.invoke('translate:cancel'),
+  onTranslateProgress: (cb) => {
+    const handler = (_e, p) => cb(p);
+    ipcRenderer.on('translate:progress', handler);
+    return () => ipcRenderer.removeListener('translate:progress', handler);
+  },
   aiTest: (draft) => ipcRenderer.invoke('ai:test', draft),
   aiModels: (draft) => ipcRenderer.invoke('ai:models', draft),
   captionsStatus: () => ipcRenderer.invoke('captions:status'),

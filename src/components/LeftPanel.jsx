@@ -3,6 +3,7 @@ import {
   Anvil, ArrowLeftRight, Blend, Captions as CaptionsIcon, Contrast, Film, FolderOpen, ImagePlus, Mic, Music, Plus, Scissors, SlidersHorizontal,
   Loader2, Sparkles, Square, Trash2, Type, Upload, WandSparkles, X,
   Layers, ChevronDown, ChevronRight, ChevronUp, Sparkles as SparklesIcon, Award, FolderPlus, MonitorUp, History, UserRound, Users, LayoutTemplate,
+  Languages,
 } from 'lucide-react';
 import AssetsTab from './AssetsPanel.jsx';
 import PackMusic from './PackMusic.jsx';
@@ -19,7 +20,8 @@ import {
 } from '../text/userTemplates.js';
 import { BUNDLED_LUTS } from '../fx/lut.js';
 import { loadLutLibrary, saveLutLibrary, addLutEntry, removeLutEntry } from '../fx/lutlib.js';
-import { formatTime, getPlaybackQuality, levelCopyState, previewPath, projectDuration, proxyPrefOn, toFileUrl, uid } from '../store.js';
+import { formatTime, getPlaybackQuality, layerCount, levelCopyState, previewPath, projectDuration, proxyPrefOn, toFileUrl, uid } from '../store.js';
+import { TRANSLATE_LANGS, langName, translationSources, translationStyle } from '../translate.js';
 import { flatWords, rangesSeconds, retakeCutRanges, retakeGroups, selectionCutRanges, sentenceRange, silenceCutRanges, transcriptSentences } from '../transcript.js';
 import { COLLECTIONS, PACKS, COLLECTION_ITEMS, loadFavorites, saveFavorites, toggleFavorite } from '../fx/collections.js';
 import { parseSRT, regroupSegments } from '../subtitles.js';
@@ -694,6 +696,88 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
   );
 }
 
+// Caption translation (v1.1.10): send the caption lines to the AI provider
+// configured in Settings; the translations come back as a NEW text layer
+// with the original timings and styles, originals untouched.
+function TranslateCard({ project, dispatch }) {
+  const sources = translationSources(project);
+  const [src, setSrc] = useState('auto');
+  const [lang, setLang] = useState('fr');
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+  const clips = sources[src] || [];
+  const existing = project.textClips.filter((c) => c.source === 'translation');
+
+  useEffect(() => {
+    if (!busy) return undefined;
+    const off = window.api.onTranslateProgress((p) => setProgress(p));
+    return off;
+  }, [busy]);
+
+  const run = async () => {
+    if (!clips.length || busy) return;
+    setBusy(true); setError(''); setNote(''); setProgress({ done: 0, total: clips.length });
+    try {
+      const res = await window.api.translateCaptions({ texts: clips.map((c) => c.text || ''), targetName: langName(lang) });
+      if (res.canceled) { setNote('Translation cancelled — nothing was added.'); return; }
+      if (res.error) { setError(res.error); return; }
+      if (!res.texts || res.texts.length !== clips.length) { setError('The AI provider returned an unexpected reply. Nothing was added.'); return; }
+      const layer = layerCount(project, 'text');
+      dispatch({
+        type: 'addTranslatedCaptions',
+        lang,
+        layer,
+        segments: clips.map((c, i) => ({
+          id: uid(),
+          text: res.texts[i],
+          start: c.start,
+          duration: c.duration,
+          style: translationStyle(c),
+        })),
+      });
+      setNote(`Added ${clips.length} ${langName(lang)} caption${clips.length > 1 ? 's' : ''} on a new text layer (Text ${layer + 1}). The originals are unchanged.`);
+    } catch (e) {
+      setError(e.message || 'Translation failed.');
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  };
+
+  return (
+    <div className="card">
+      <b><Languages size={14} /> Translate captions</b>
+      <p className="muted">Translate your captions with the AI provider from Settings. The translation lands on a new text layer with the same timings — the original captions stay as they are.</p>
+      <div className="preset-save">
+        <select value={src} onChange={(e) => setSrc(e.target.value)} aria-label="Captions to translate" disabled={busy}>
+          <option value="auto">Auto captions ({sources.auto.length})</option>
+          <option value="srt">Imported subtitles ({sources.srt.length})</option>
+          <option value="all">All captions ({sources.all.length})</option>
+        </select>
+        <select value={lang} onChange={(e) => setLang(e.target.value)} aria-label="Target language" disabled={busy}>
+          {TRANSLATE_LANGS.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
+        </select>
+      </div>
+      {busy ? (
+        <>
+          <div className="progress"><div style={{ width: `${progress && progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} /></div>
+          <p className="muted small">Translating… {progress ? `${progress.done} of ${progress.total} lines` : ''}</p>
+          <button className="btn btn-ghost btn-sm" onClick={() => window.api.translateCancel()}>Cancel</button>
+        </>
+      ) : (
+        <button className="btn btn-sm" disabled={!clips.length} onClick={run}>
+          <Languages size={14} /> Translate {clips.length ? `${clips.length} caption${clips.length > 1 ? 's' : ''} ` : ''}to {langName(lang)}
+        </button>
+      )}
+      {!clips.length && !busy && <p className="muted small">Generate or import captions first — there is nothing to translate yet.</p>}
+      {existing.length > 0 && <p className="muted small">{existing.length} translated caption{existing.length > 1 ? 's' : ''} already on the timeline.</p>}
+      {error && <p className="muted small" role="alert">{error}</p>}
+      {note && <p className="muted small">{note}</p>}
+    </div>
+  );
+}
+
 function CaptionsTab({ onAddText, captions, project, dispatch, onSeek, onSelect }) {
   const [lang, setLang] = useState('auto');
   const [model, setModel] = useState('base');
@@ -978,6 +1062,7 @@ function CaptionsTab({ onAddText, captions, project, dispatch, onSeek, onSelect 
           </>
         )}
       </div>
+      <TranslateCard project={project} dispatch={dispatch} />
       {subtitleClips.length > 0 && (
         <div className="card sub-panel">
           <div className="sub-panel-head">

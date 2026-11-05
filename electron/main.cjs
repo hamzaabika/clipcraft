@@ -1235,6 +1235,37 @@ ipcMain.handle('beats:analyze', async (_e, project) => {
 });
 ipcMain.handle('beats:cancel', () => { if (beatsJob) beatsJob.canceled = true; });
 
+// ---- Caption translation (v1.1.10): the user's AI provider translates the
+// caption lines; timings never leave the renderer. One job at a time. ----
+const translate = require('./translate.cjs');
+let translateJob = null; // { canceled }
+ipcMain.handle('translate:captions', async (_e, { texts, targetName } = {}) => {
+  if (translateJob) return { error: 'A translation is already running. Wait for it to finish.' };
+  if (!Array.isArray(texts) || !texts.length) return { error: 'There are no captions to translate.' };
+  if (!targetName) return { error: 'Pick a target language first.' };
+  const job = { canceled: false };
+  translateJob = job;
+  const send = (done, total) => { if (win && !win.isDestroyed()) win.webContents.send('translate:progress', { done, total }); };
+  try {
+    const fb = require('./aifallback.cjs');
+    const active = settings.getActive();
+    const keys = settings.getPublic().keys || {};
+    const order = fb.fallbackOrder(active.provider, (p) => p === 'ollama' || !!keys[p]);
+    const { result, provider, failed } = await fb.withFallback(order, (p) => settings.getActive(p), (cfg) =>
+      translate.translateTexts(texts, targetName, (system, user) => ai.chat(cfg, { system, messages: [{ role: 'user', content: user }], maxTokens: 4096, timeoutMs: 120000 }), {
+        onProgress: send,
+        isCancelled: () => job.canceled,
+      }));
+    if (job.canceled) return { canceled: true };
+    return { ok: true, texts: result, provider, fellBack: failed.map((f) => f.provider) };
+  } catch (e) {
+    return job.canceled || /cancelled/i.test(e.message || '') ? { canceled: true } : { error: e.message };
+  } finally {
+    translateJob = null;
+  }
+});
+ipcMain.handle('translate:cancel', () => { if (translateJob) translateJob.canceled = true; });
+
 // Background pictures for scenes without footage (CraftAI's add_scene), kept with the library downloads.
 ipcMain.handle('scene:make', async (_e, opts) => {
   try {

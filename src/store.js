@@ -509,6 +509,25 @@ function reduceProjectInner(p, a) {
       }));
       return { ...p, textClips: [...p.textClips, ...caps] };
     }
+    case 'addTranslatedCaptions': {
+      // Caption translation (v1.1.10): the translated lines land on their own
+      // new text layer with the source captions' exact timings and styles —
+      // the originals are untouched, and the whole layer is one undo step.
+      const layer = Math.max(0, Math.floor(a.layer) || 0);
+      const caps = (a.segments || []).map((s) => ({
+        ...(s.style || {}),
+        id: s.id,
+        text: s.text,
+        start: s.start,
+        duration: Math.max(0.2, s.duration),
+        caption: true,
+        source: 'translation',
+        lang: a.lang || '',
+        layer,
+      }));
+      if (!caps.length) return p;
+      return { ...p, textClips: [...p.textClips, ...caps] };
+    }
     case 'removeSrtCaptions':
       return { ...p, textClips: p.textClips.filter((c) => c.source !== 'srt') };
     case 'styleSrtCaptions':
@@ -589,6 +608,7 @@ function reduceProjectInner(p, a) {
       return cutRanges(p, a.ranges, { rippleText: !!a.rippleText });
     case 'addMarker':
       return { ...p, markers: [...p.markers, { id: a.id, time: Math.max(0, a.time), label: a.label || '' }].sort((x, y) => x.time - y.time) };
+
     case 'removeMarker':
       return { ...p, markers: p.markers.filter((m) => m.id !== a.id) };
     case 'setBeats':
@@ -1001,6 +1021,7 @@ function actionLocked(p, a) {
     case 'deleteLayer': return a.track !== 'video' && isLayerLocked(p, a.track, a.layer);
     case 'setCaptions':
     case 'importSrtCaptions': return isLayerLocked(p, 'text', 0);
+    case 'addTranslatedCaptions': return isLayerLocked(p, 'text', Math.max(0, Math.floor(a.layer) || 0));
     case 'addEffectClip': return isLayerLocked(p, 'effect', 0);
     case 'insertAudioClip': return isLayerLocked(p, 'audio', layerOf(a.clip || {}));
     case 'addToTimeline': {

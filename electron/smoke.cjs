@@ -1278,6 +1278,90 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'translate') {
+    // Caption translation (v1.1.10): the Captions tab must show the Translate
+    // card with live source counts; dispatching addTranslatedCaptions the way
+    // the card does (after a provider reply) must add a NEW text layer whose
+    // clips keep the source timings and styles exactly, originals untouched,
+    // one undo step. The provider call itself is covered by
+    // scripts/test-translate.cjs (no key/network in the sandbox profile).
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'clip.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=10',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=10', '-shortest', '-pix_fmt', 'yuv420p', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const capStyle = {
+        font: 'poppins', size: 54, bold: true, color: '#ffffff', y: 0.8, caption: true, template: 'cap-karaoke',
+        stroke: { width: 5, color: '#000000' }, highlight: { mode: 'karaoke', color: '#825cfb' },
+        animIn: { id: 'fade', dur: 0.25 }, animOut: { id: 'fade', dur: 0.25 }, animLoop: { id: 'none', speed: 1 },
+      };
+      const p = {
+        name: 'Translate smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'clip.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 10, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [],
+        textClips: [
+          { ...capStyle, id: 'c1', text: 'Hello and welcome', start: 0.5, duration: 2, words: [{ text: 'Hello', start: 0, end: 0.4 }] },
+          { ...capStyle, id: 'c2', text: 'This is my channel', start: 3, duration: 2 },
+          { ...capStyle, id: 'c3', text: 'Let us begin', start: 5.5, duration: 1.5 },
+        ],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      await q(`window.__fve.tab('captions')`);
+      await wait(600);
+      // The card: source select counts + translate button state.
+      result.cardShown = await until(`[...document.querySelectorAll('.card b')].some((b) => b.textContent.includes('Translate captions'))`, 10000);
+      result.sourceOptions = await q(`[...document.querySelectorAll('select[aria-label="Captions to translate"] option')].map((o) => o.textContent)`);
+      result.langOptions = await q(`document.querySelectorAll('select[aria-label="Target language"] option').length`);
+      result.translateBtnEnabled = await q(`![...document.querySelectorAll('button')].find((b) => b.textContent.includes('Translate 3 captions'))?.disabled`);
+      await shot('tr-1-card.png');
+      // Dispatch exactly what the card dispatches after a provider reply:
+      // segments with the helpers' style copy (identity/timing/words stripped).
+      await q(`(() => {
+        const proj = window.__fve.exportData().project;
+        const srcs = proj.textClips.filter((c) => c.caption && c.source !== 'translation').sort((a, b) => a.start - b.start);
+        const strip = (c) => { const s = { ...c }; for (const k of ['id','text','start','duration','words','source','lang','caption','layer']) delete s[k]; return s; };
+        const layer = Math.max(0, ...proj.textClips.map((c) => (c.layer ?? 0) + 1));
+        window.__fve.dispatch({ type: 'addTranslatedCaptions', lang: 'fr', layer, segments: srcs.map((c, i) => ({
+          id: 'tr' + i, text: ['Bonjour et bienvenue', 'Voici ma chaîne', 'Commençons'][i], start: c.start, duration: c.duration, style: strip(c),
+        })) });
+        return true;
+      })()`);
+      await wait(500);
+      const after = await q(`window.__fve.exportData().project`);
+      const tr = after.textClips.filter((c) => c.source === 'translation');
+      result.translatedCount = tr.length;
+      result.translatedLang = tr[0]?.lang;
+      result.translatedLayer = tr[0]?.layer;
+      result.timingsKept = tr.every((c, i) => Math.abs(c.start - [0.5, 3, 5.5][i]) < 1e-9 && Math.abs(c.duration - [2, 2, 1.5][i]) < 1e-9);
+      result.styleKept = tr[0]?.font === 'poppins' && tr[0]?.highlight?.mode === 'karaoke';
+      result.wordsDropped = tr.every((c) => !('words' in c));
+      result.originalsIntact = after.textClips.filter((c) => c.source !== 'translation').length === 3;
+      result.panelRows = await q(`document.querySelectorAll('.sub-panel .sub-row').length`);
+      await shot('tr-2-layer.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.afterUndo = (await q(`window.__fve.exportData().project`)).textClips.length;
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'subtitles') {
     // Subtitles panel + user caption templates + export progress (2026-11-05):
     // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap
