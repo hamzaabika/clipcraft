@@ -147,6 +147,7 @@ export default function ExportDialog({ state, onCancel, onClose, onShow, onOpen,
               <div className="x-enc-status">
                 <div className="x-ring sm" aria-hidden="true" />
                 <span className="x-enc-stage" aria-live="polite">{state.stage || 'Encoding video'}…</span>
+                <span className="x-enc-time">{fmtDur((state.progress || 0) * dur)} / {fmtDur(dur)}</span>
                 <span className="x-enc-pct">{pct}%</span>
               </div>
               <div className="progress big x-bar" aria-live="polite"><div style={{ width: `${pct}%` }} /></div>

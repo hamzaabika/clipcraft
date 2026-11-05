@@ -39,4 +39,34 @@ function qualityScaleFilter(quality) {
   return `scale=w='if(gt(iw,ih),${max},-2)':h='if(gt(iw,ih),-2,${max})':flags=fast_bilinear`;
 }
 
-module.exports = { QUALITIES, QUALITY_MAX_SIDE, isQuality, qualityFromStored, qualityTargetSize, qualityScaleFilter };
+// Saved copy pointers (item.proxy, item.lightProxy, item.proxies[q]) are ABSOLUTE cache paths
+// persisted inside the project file. The cache can go away — the app's own cache clear, a
+// reinstall, a moved userData folder — while the project keeps the string, and every reader
+// used to trust it: the player pointed its element at the dead file (black picture, error
+// MEDIA_ERR_SRC_NOT_SUPPORTED, sound from other clips still playing), levelCopyState called
+// it 'ready', and regeneration skipped string entries entirely, so the black box never healed.
+// A copy pointer is therefore only worth what the disk says: given an `exists(path)` check,
+// return { item, patch } with every dead pointer cleared (null), or null when all are alive.
+// `false` entries are a state (generation failed), not a path, and are left alone. Pure, so
+// the suite can drive it with a fake disk.
+function pruneDeadCopies(item, exists) {
+  if (!item || typeof exists !== 'function') return null;
+  const dead = (v) => typeof v === 'string' && v !== '' && !exists(v);
+  let next = null;
+  const patch = {};
+  const work = () => (next || (next = { ...item }));
+  if (dead(item.proxy)) { work().proxy = null; patch.proxy = null; }
+  if (dead(item.lightProxy)) { work().lightProxy = null; patch.lightProxy = null; }
+  if (item.proxies && typeof item.proxies === 'object') {
+    const deadKeys = Object.keys(item.proxies).filter((k) => dead(item.proxies[k]));
+    if (deadKeys.length) {
+      const cleaned = { ...item.proxies };
+      for (const k of deadKeys) cleaned[k] = null;
+      work().proxies = cleaned;
+      patch.proxies = cleaned;
+    }
+  }
+  return next ? { item: next, patch } : null;
+}
+
+module.exports = { QUALITIES, QUALITY_MAX_SIDE, isQuality, qualityFromStored, qualityTargetSize, qualityScaleFilter, pruneDeadCopies };

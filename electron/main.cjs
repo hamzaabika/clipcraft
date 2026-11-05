@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const { FxJobs } = require('./fxjobs.cjs');
 const { probe, runExport, exportAudio, toM4a, renderTimelineAudio, detectSilences, makeVisuals, needsProxy, makeProxy, makeLightProxy, makeQualityProxy, hasLibx265 } = require('./ffmpeg.cjs');
-const { qualityTargetSize } = require('./quality.cjs');
+const { qualityTargetSize, pruneDeadCopies } = require('./quality.cjs');
 const whisper = require('./whisper.cjs');
 const cloudCaptions = require('./cloudCaptions.cjs');
 
@@ -164,6 +164,7 @@ async function probeAll(files) {
 // is the performance mode's concurrency knob (measured per mode — see PERF-REPORT).
 const visualsQueue = [];
 const visualsQueued = new Set();
+const proxyRetried = new Set(); // "path|quality" keys already given their one retry this session
 let visualsActive = 0;
 const VISUALS_CONCURRENCY = { 'low-end': 1, balanced: 2, 'high-performance': 3 };
 
@@ -209,6 +210,15 @@ function pumpVisuals() {
 async function processVisualItem(it) {
     const send = (v) => { if (win && !win.isDestroyed()) win.webContents.send('media:visuals', { path: it.path, ...v }); };
     const cache = mediaCacheDir();
+    // Dead copy pointers first (see pruneDeadCopies in quality.cjs): clear them in the
+    // renderer before anything else reads them, so the player falls back to a working
+    // file at once; the generation paths below then remake the copies because the
+    // entries read as missing (null), which is what they already key on.
+    const pruned = pruneDeadCopies(it, (p) => fs.existsSync(p));
+    if (pruned) {
+      send(pruned.patch);
+      it = pruned.item;
+    }
     await makeVisuals(it, cache, send).catch(() => {});
     // Preview proxy for video the player cannot decode well (projects saved earlier lack the codec details).
     try {
@@ -225,7 +235,16 @@ async function processVisualItem(it) {
       const quality = settings.getQuality();
       if (info.type === 'video' && quality !== 'full') {
         const prev = it.proxies && typeof it.proxies === 'object' ? it.proxies : {};
-        if (prev[quality] == null) {
+        // A failed copy (proxies[q] === false) used to be final until the file
+        // was re-imported. Now it is retried ONCE per session per file+level:
+        // the renderer re-queues 'failed' items, this set is the brake that
+        // keeps a persistently failing source from looping forever.
+        const retryKey = `${it.path}|${quality}`;
+        const mayRetry = prev[quality] === false && !proxyRetried.has(retryKey);
+        if (prev[quality] === false && !mayRetry) {
+          // Already retried this session: leave the failure state untouched.
+        } else if (prev[quality] == null || mayRetry) {
+          if (mayRetry) proxyRetried.add(retryKey);
           if (!qualityTargetSize(info.width, info.height, quality)) {
             send({ proxies: { ...prev, [quality]: proxyPath && fs.existsSync(proxyPath) ? proxyPath : it.path } });
           } else {
@@ -233,7 +252,7 @@ async function processVisualItem(it) {
             try {
               send({ proxies: { ...prev, [quality]: await makeQualityProxy(info, cache, quality) }, optimizing: false });
             } catch {
-              send({ proxies: { ...prev, [quality]: false }, optimizing: false }); // not retried until re-import
+              send({ proxies: { ...prev, [quality]: false }, optimizing: false }); // retried once per session (see above)
             }
           }
         }

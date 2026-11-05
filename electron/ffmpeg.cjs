@@ -723,6 +723,47 @@ function pickEncoder() {
   return encoderPick;
 }
 
+// ---- Export progress parsing ----
+// FFmpeg writes `-progress pipe:1` key=value lines to stdout in chunks that do
+// NOT align with lines: one chunk can carry several out_time values, and one
+// value can be split across two chunks. The old code regex-matched only the
+// FIRST value per chunk, so the reported time lagged and jumped. This parser
+// buffers the tail, takes the LAST complete value in each chunk, and never
+// reports backwards. `out_time_ms` is accepted alongside `out_time_us`
+// (FFmpeg's ms field carries microseconds too).
+function parseProgressValues(text) {
+  const out = [];
+  const re = /out_time_(?:us|ms)=(\d+)/g;
+  let m;
+  while ((m = re.exec(text))) out.push(Number(m[1]) / 1e6);
+  return out;
+}
+
+function createProgressParser(total, onProgress) {
+  let buf = '';
+  let last = 0;
+  return {
+    feed(chunk) {
+      buf += chunk.toString();
+      const values = parseProgressValues(buf);
+      if (values.length) {
+        // Keep only the tail after the last complete value: it may hold a
+        // value split across the chunk boundary.
+        const cut = buf.lastIndexOf('out_time');
+        buf = cut >= 0 ? buf.slice(cut) : '';
+        if (buf.length > 64) buf = buf.slice(-64);
+        if (total > 0) {
+          const v = Math.min(1, values[values.length - 1] / total);
+          if (v > last) { last = v; onProgress?.(last); }
+        }
+      } else if (buf.length > 64) {
+        buf = buf.slice(-64);
+      }
+    },
+    get value() { return last; },
+  };
+}
+
 function runExport(project, outFile, onProgress, runOpts = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fve-'));
   const maskFiles = {};
@@ -758,10 +799,8 @@ function runExport(project, outFile, onProgress, runOpts = {}) {
     // responsive during exports. Scheduling only — the graph and output are identical.
     if (runOpts.nice) { try { os.setPriority(proc.pid, runOpts.nice); } catch { /* not permitted on every platform */ } }
     let log = '';
-    proc.stdout.on('data', (d) => {
-      const m = /out_time_us=(\d+)/.exec(d.toString());
-      if (m && total > 0) onProgress?.(Math.min(1, Number(m[1]) / 1e6 / total));
-    });
+    const progress = createProgressParser(total, onProgress);
+    proc.stdout.on('data', (d) => progress.feed(d));
     proc.stderr.on('data', (d) => {
       log += d;
       if (log.length > 20000) log = log.slice(-20000);
@@ -1012,4 +1051,4 @@ async function sampleFrames(item, from, to, count = 8) {
 
 module.exports = {
   sampleFrames,
-  toSdr, stillInput, graphFile, pickEncoder, hasLibx265, effectiveExport, makeScene, needsProxy, makeProxy, makeLightProxy, makeQualityProxy, ffmpegPath, ffprobePath, probe, lookFilters, fitSize, narrowClip, buildExportArgs, buildAudioExportArgs, exportAudio, runExport, toM4a, renderMainAudio, renderTimelineAudio, detectSilences, makeVisuals };
+  toSdr, stillInput, graphFile, pickEncoder, hasLibx265, effectiveExport, makeScene, needsProxy, makeProxy, makeLightProxy, makeQualityProxy, ffmpegPath, ffprobePath, probe, lookFilters, fitSize, narrowClip, buildExportArgs, buildAudioExportArgs, exportAudio, runExport, toM4a, renderMainAudio, renderTimelineAudio, detectSilences, makeVisuals, parseProgressValues, createProgressParser };

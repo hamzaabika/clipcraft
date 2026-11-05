@@ -1,0 +1,55 @@
+{
+  "appId": "com.clipcraft.app",
+  "afterPack": "build/after-pack.cjs",
+  "productName": "ClipCraft",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "shared/**/*",
+    "assets/**/*",
+    "bundled-templates/**/*",
+    "package.json",
+    "node_modules/ffmpeg-static/**/*",
+    "node_modules/ffprobe-static/**/*",
+    "node_modules/onnxruntime-node/**/*"
+  ],
+  "asarUnpack": [
+    "bundled-templates/**",
+    "node_modules/ffmpeg-static/**",
+    "node_modules/ffprobe-static/**",
+    "node_modules/onnxruntime-node/**"
+  ],
+  "linux": {
+    "target": [
+      "deb"
+    ],
+    "category": "AudioVideo",
+    "maintainer": "Hamza Abika",
+    "description": "ClipCraft - free desktop video editor by Hamza Abika",
+    "icon": "build/icon.png",
+    "syncDesktopName": true
+  },
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "icon": "build/icon.png",
+    "artifactName": "ClipCraft-Setup-${version}.${ext}"
+  },
+  "mac": {
+    "target": [
+      "dmg"
+    ],
+    "icon": "build/icon.png",
+    "category": "public.app-category.video",
+    "artifactName": "ClipCraft-${version}.${ext}",
+    "x64ArchFiles": "**/app.asar.unpacked/node_modules/**"
+  },
+  "deb": {
+    "afterInstall": "build/after-install.sh"
+  },
+  "publish": null
+}

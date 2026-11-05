@@ -2400,3 +2400,22 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .assets-pack-more { padding: 4px 2px 8px; display: flex; flex-direction: column; gap: 6px; }
 .about-tour { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
 .pack-music-offer { display: flex; flex-direction: column; gap: 6px; }
+
+/* ---- Subtitles full-text panel + user caption templates (Captions tab) ---- */
+.sub-panel-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.sub-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; margin-top: 8px; }
+.sub-row { display: grid; grid-template-columns: 22px 1fr; gap: 2px 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-3); cursor: pointer; }
+.sub-row:hover { border-color: var(--border-strong); }
+.sub-idx { grid-row: span 2; color: var(--text-3); font-size: 11px; font-weight: 700; padding-top: 2px; }
+.sub-times { color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sub-text { width: 100%; min-height: 34px; resize: vertical; }
+.sub-text[dir="rtl"] { text-align: right; }
+.user-tpl-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+.user-tpl-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-3); }
+.user-tpl-row.on { border-color: var(--primary); }
+.user-tpl-name { flex: 1; font-size: 12px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Export encoding view: live processed-time readout next to the stage. */
+.x-enc-time { margin-left: auto; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.x-enc-pct { margin-left: 0; }
+/* Proxy failure badge on media cards (the original file plays instead). */
+.asset-opt.failed { background: rgba(248, 113, 113, .18); color: #fca5a5; }

@@ -46,7 +46,8 @@ module.exports = async function smoke(win, app, dir) {
           ],
           overlayClips: [], textClips: [{ id: 't1', text: 'Summer', start: 0, duration: 3.5, y: 0.5 }], audioClips: [], stickerClips: [], effectClips: [],
         };
-        await q(`window.__fve.load(${JSON.stringify(p)})`);
+        result.at='load';
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
         await wait(300);
         await q(`window.__fve.dispatch({ type: 'updateMany', updates: [{ track: 'video', id: 'v1', patch: { slot: true } }, { track: 'video', id: 'v3', patch: { slot: true } }] })`);
         await wait(300);
@@ -116,6 +117,497 @@ module.exports = async function smoke(win, app, dir) {
       await wait(400);
       result.restoredName = await q(`window.__fve.exportData().project.name`);
       result.bannerGone = await q(`!document.querySelector('.recovered-note')`);
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'overlay') {
+    // Overlay (PIP) preview picture (2026-11-05 bug: overlay video shows black in the
+    // Preview while sound works). Fixture: colourful main clip 0..12 s + a SOLID RED
+    // overlay clip at start 3, length 6 (in 0..6), centred half-size — any decoded
+    // overlay frame is unmistakably red, a missing frame is black. Evidence is read
+    // off the overlay <video> element itself: drawImage into a canvas and sample the
+    // pixels (a video element only paints its current decoded frame), plus
+    // readyState / currentTime / src for the mechanism.
+    const q = run;
+    const until = async (js, ms = 20000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    const probe = require('./ffmpeg.cjs').probe;
+    const sampleJs = (sel) => `(() => {
+      const v = document.querySelector('${sel}');
+      if (!v) return { found: false };
+      const out = { found: true, src: (v.getAttribute('src') || '').split('/').pop(),
+        readyState: v.readyState, videoWidth: v.videoWidth, videoHeight: v.videoHeight,
+        currentTime: +v.currentTime.toFixed(3), paused: v.paused,
+        display: getComputedStyle(v).display,
+        slotVis: v.closest('.slot') ? getComputedStyle(v.closest('.slot')).visibility : null };
+      try {
+        const cv = document.createElement('canvas'); cv.width = 32; cv.height = 32;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(v, 0, 0, 32, 32);
+        const all = ctx.getImageData(0, 0, 32, 32).data;
+        let r = 0, g = 0, b = 0;
+        for (let i = 0; i < all.length; i += 4) { r += all[i]; g += all[i + 1]; b += all[i + 2]; }
+        const n = 32 * 32;
+        out.mean = [+((r / n)).toFixed(1), +((g / n)).toFixed(1), +((b / n)).toFixed(1)];
+      } catch (e) { out.sampleError = e.message; }
+      return out;
+    })()`;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const mainSrc = path.join(mediaDir, 'main.mp4');
+      const ovSrc = path.join(mediaDir, 'overlay-red.mp4');
+      if (!fs.existsSync(mainSrc)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=12',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=12', '-shortest', '-pix_fmt', 'yuv420p', mainSrc]);
+      }
+      if (!fs.existsSync(ovSrc)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=0xff0000:size=360x640:rate=30:duration=6',
+          '-f', 'lavfi', '-i', 'sine=frequency=880:duration=6', '-shortest', '-pix_fmt', 'yuv420p', ovSrc]);
+      }
+      await wait(800);
+      // Enter the editor (fresh profiles start on Home; the tour must be dismissed first).
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      const mMain = await probe(mainSrc);
+      const mOv = await probe(ovSrc);
+      const p = {
+        name: 'Overlay smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [
+          { id: 'm0', path: mainSrc, name: 'main.mp4', ...mMain },
+          { id: 'm1', path: ovSrc, name: 'overlay-red.mp4', ...mOv },
+        ],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 12, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [{ id: 'ov1', mediaId: 'm1', in: 0, out: 6, start: 3, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null, transform: { scale: 0.5, x: 0, y: 0 } }],
+        audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(500);
+      // A. Paused seek INSIDE the overlay range (t=5 -> overlay local 2.0).
+      await q(`window.__fve.seek(5)`);
+      result.ovReadyA = await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && v.readyState >= 2 && Math.abs(v.currentTime - 2) < 0.3; })()`, 12000);
+      await wait(600);
+      result.seek5 = await q(sampleJs('.slot.ov video'));
+      result.main5 = await q(sampleJs('.stage .slot:not(.ov) video'));
+      await shot('ov-1-seek5.png');
+      // B. Paused seek OUTSIDE the overlay range (t=1): slot must hide.
+      await q(`window.__fve.seek(1)`);
+      await wait(600);
+      result.seek1 = await q(sampleJs('.slot.ov video'));
+      // C. Paused seek near the overlay end (t=8.5 -> local 5.5).
+      await q(`window.__fve.seek(8.5)`);
+      result.ovReadyC = await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && v.readyState >= 2 && Math.abs(v.currentTime - 5.5) < 0.3; })()`, 12000);
+      await wait(600);
+      result.seek85 = await q(sampleJs('.slot.ov video'));
+      await shot('ov-2-seek85.png');
+      // D. Play from inside the range, let it actually advance, then pause and sample.
+      await q(`window.__fve.seek(4); window.__fve.play()`);
+      result.playAdvanced = await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && !v.paused && v.currentTime > 1.6; })()`, 15000);
+      await q(`window.__fve.pause()`);
+      await wait(500);
+      result.afterPlay = await q(sampleJs('.slot.ov video'));
+      await shot('ov-3-after-play.png');
+      if (process.env.FVE_SMOKE_OV_VARIANT === 'stale') {
+        // Stale-proxy variant: the overlay's OWN media (distinct from main) carries a
+        // saved proxies.medium path whose file does NOT exist on disk (cache cleared /
+        // moved). Quality is medium (seeded by the runner). Question: does the overlay
+        // element sit on the dead URL forever while the main track plays fine?
+        const bigSrc = path.join(mediaDir, 'big.mp4');
+        if (!fs.existsSync(bigSrc)) {
+          execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30:duration=12',
+            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=12', '-shortest', '-pix_fmt', 'yuv420p', bigSrc]);
+        }
+        const bigItem = { id: 'm1', path: bigSrc, name: 'big.mp4', ...(await probe(bigSrc)),
+          proxies: { medium: path.join(dir, 'media-cache-test', 'deadbeefdeadbeef-qmedium.mp4') } };
+        const p = {
+          name: 'Stale proxy overlay', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+          media: [{ id: 'm0', path: mainSrc, name: 'main.mp4', ...mMain }, bigItem],
+          videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 12, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+          overlayClips: [{ id: 'ov1', mediaId: 'm1', in: 0, out: 12, start: 3, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null, transform: { scale: 0.5, x: 0, y: 0 } }],
+          audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+        };
+        await q(`window.__fve.load(${JSON.stringify(p)})`);
+        await wait(400);
+        await q(`window.__fve.seek(5)`);
+        await wait(2000);
+        result.staleEarly = await q(sampleJs('.slot.ov video'));
+        result.staleEarlyErr = await q(`(() => { const v = document.querySelector('.slot.ov video'); return v ? { error: v.error ? v.error.code : null, networkState: v.networkState } : null; })()`);
+        // Give the background pipeline every chance to heal it.
+        await wait(15000);
+        await q(`window.__fve.seek(6)`);
+        await wait(1500);
+        result.staleLate = await q(sampleJs('.slot.ov video'));
+        result.staleLateErr = await q(`(() => { const v = document.querySelector('.slot.ov video'); return v ? { error: v.error ? v.error.code : null, networkState: v.networkState } : null; })()`);
+        result.staleMediaLate = await q(`window.__fve.exportData().project.media.find((m) => m.id === 'm1')?.proxies`);
+        result.staleMain = await q(sampleJs('.stage .slot:not(.ov) video'));
+        await shot('ov-14-stale.png');
+      }
+      if (process.env.FVE_SMOKE_OV_VARIANT === 'exact') {
+        // Exact variant: Hamza's Untitled.clipcraft.json configuration verbatim (only
+        // durations scaled to a local 42 s 1920x1080 file): same media on both tracks,
+        // main with blur + scale keyframes + x offset, overlay full-length with his
+        // crop and 2.61 scale, project 1080x1920, quality medium (seeded by runner).
+        // Seeks sweep the whole range; every sample is 1.5 s after the seek.
+        const bigSrc = path.join(mediaDir, 'big42.mp4');
+        if (!fs.existsSync(bigSrc)) {
+          execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30:duration=42',
+            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=42', '-shortest', '-pix_fmt', 'yuv420p', bigSrc]);
+        }
+        const mBig = await probe(bigSrc);
+        const sampleCanvas = `(() => {
+          const cv = document.querySelector('.slot.ov canvas.keyed');
+          if (!cv) return { found: false };
+          const out = { found: true, display: getComputedStyle(cv).display, w: cv.width, h: cv.height };
+          try {
+            const c2 = document.createElement('canvas'); c2.width = 32; c2.height = 32;
+            const ctx = c2.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(cv, 0, 0, 32, 32);
+            const all = ctx.getImageData(0, 0, 32, 32).data;
+            let r = 0, g = 0, b = 0, a = 0;
+            for (let i = 0; i < all.length; i += 4) { r += all[i]; g += all[i + 1]; b += all[i + 2]; a += all[i + 3]; }
+            const n = 32 * 32;
+            out.mean = [+((r / n)).toFixed(1), +((g / n)).toFixed(1), +((b / n)).toFixed(1), +((a / n)).toFixed(1)];
+          } catch (e) { out.sampleError = e.message; }
+          return out;
+        })()`;
+        const p = {
+          name: 'Untitled', ratio: '9:16', resolution: 1080, width: 1080, height: 1920, fps: 30, background: '#000000',
+          media: [{ id: 'mB', path: bigSrc, name: 'big42.mp4', ...mBig }],
+          videoClips: [{ id: 'tdcrjt4u', mediaId: 'mB', in: 0, out: 42, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: ['blur'], transition: null,
+            keyframes: { scale: [{ t: 0, v: 3.66, e: 'smooth' }] },
+            transform: { scale: 1, scaleX: 1, scaleY: 1, uniform: true, x: 0.048309178743961324, y: 0, rot: 0 }, layer: 0, fxRegions: {} }],
+          overlayClips: [{ id: 'byztdhhf', mediaId: 'mB', in: 0, out: 42, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null, start: 0,
+            transform: { scale: 2.61, scaleX: 1, scaleY: 1, uniform: true, x: 0, y: 0, rot: 0 }, layer: 0,
+            crop: { l: 0, t: 0.16234715289817364, r: 0, b: 0.14005925706556877 }, cropAspect: 'free', keyframes: {} }],
+          audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+        };
+        await q(`window.__fve.load(${JSON.stringify(p)})`);
+        await wait(400);
+        result.proxyLanded = await until(`(() => { const m = window.__fve.exportData().project.media[0]; return typeof m.proxies?.medium === 'string'; })()`, 120000);
+        await wait(1000);
+        result.sweep = {};
+        for (const t of [0.5, 5, 13, 21, 30, 41]) {
+          await q(`window.__fve.seek(${t})`);
+          await wait(1500);
+          result.sweep[t] = { video: await q(sampleJs('.slot.ov video')), canvas: await q(sampleCanvas) };
+        }
+        await shot('ov-12-exact.png');
+        // Play for a while from 20 s, pause, sample.
+        await q(`window.__fve.seek(20); window.__fve.play()`);
+        result.playAdvanced = await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && !v.paused && v.currentTime > 22; })()`, 20000);
+        await q(`window.__fve.pause()`);
+        await wait(600);
+        result.exactAfterPlay = { video: await q(sampleJs('.slot.ov video')), canvas: await q(sampleCanvas) };
+        await shot('ov-13-exact-play.png');
+      }
+      if (process.env.FVE_SMOKE_OV_VARIANT === 'medium') {
+        // Medium variant — Hamza's Untitled project end to end: playback quality is
+        // 'medium' (seeded via settings-test/settings.json by the runner), the SAME
+        // 1080p file sits on main (blur effect + scale keyframes) and on the overlay
+        // (cropped top/bottom, scale 2.61). Samples before and after the medium
+        // quality proxy lands and the elements swap files.
+        const bigSrc = path.join(mediaDir, 'big.mp4');
+        if (!fs.existsSync(bigSrc)) {
+          execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30:duration=12',
+            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=12', '-shortest', '-pix_fmt', 'yuv420p', bigSrc]);
+        }
+        const mBig = await probe(bigSrc);
+        const sampleCanvas = `(() => {
+          const cv = document.querySelector('.slot.ov canvas.keyed');
+          if (!cv) return { found: false };
+          const out = { found: true, display: getComputedStyle(cv).display, w: cv.width, h: cv.height };
+          try {
+            const c2 = document.createElement('canvas'); c2.width = 32; c2.height = 32;
+            const ctx = c2.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(cv, 0, 0, 32, 32);
+            const all = ctx.getImageData(0, 0, 32, 32).data;
+            let r = 0, g = 0, b = 0, a = 0;
+            for (let i = 0; i < all.length; i += 4) { r += all[i]; g += all[i + 1]; b += all[i + 2]; a += all[i + 3]; }
+            const n = 32 * 32;
+            out.mean = [+((r / n)).toFixed(1), +((g / n)).toFixed(1), +((b / n)).toFixed(1), +((a / n)).toFixed(1)];
+          } catch (e) { out.sampleError = e.message; }
+          return out;
+        })()`;
+        const p = {
+          name: 'Medium overlay', ratio: '9:16', resolution: 1080, width: 1080, height: 1920, fps: 30, background: '#000000',
+          media: [{ id: 'mB', path: bigSrc, name: 'big.mp4', ...mBig }],
+          videoClips: [{ id: 'v1', mediaId: 'mB', in: 0, out: 12, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: ['blur'], transition: null,
+            keyframes: { scale: [{ t: 0, v: 3.66, e: 'smooth' }] }, transform: { scale: 1, scaleX: 1, scaleY: 1, uniform: true, x: 0.048, y: 0, rot: 0 }, layer: 0, fxRegions: {} }],
+          overlayClips: [{ id: 'ov1', mediaId: 'mB', in: 0, out: 12, start: 0, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null,
+            transform: { scale: 2.61, scaleX: 1, scaleY: 1, uniform: true, x: 0, y: 0, rot: 0 }, layer: 0, keyframes: {},
+            crop: { l: 0, t: 0.16234715289817364, r: 0, b: 0.14005925706556877 }, cropAspect: 'free' }],
+          audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+        };
+        await q(`window.__fve.load(${JSON.stringify(p)})`);
+        await wait(400);
+        result.qualityShown = await q(`document.querySelector('.transport')?.innerText?.slice(0, 200) || ''`);
+        await q(`window.__fve.seek(5)`);
+        await wait(1200);
+        result.medEarlyVideo = await q(sampleJs('.slot.ov video'));
+        result.medEarlyCanvas = await q(sampleCanvas);
+        // Wait for the medium proxy to land on the media item (background generation).
+        result.proxyLanded = await until(`(() => { const m = window.__fve.exportData().project.media[0]; return typeof m.proxies?.medium === 'string'; })()`, 90000);
+        await wait(800);
+        await q(`window.__fve.seek(5)`);
+        await wait(1200);
+        result.medLateVideo = await q(sampleJs('.slot.ov video'));
+        result.medLateCanvas = await q(sampleCanvas);
+        result.medLateMain = await q(sampleJs('.stage .slot:not(.ov) video'));
+        await shot('ov-10-medium.png');
+        // Seek again after the swap, to a different position.
+        await q(`window.__fve.seek(9)`);
+        await wait(1200);
+        result.medSeek9Video = await q(sampleJs('.slot.ov video'));
+        result.medSeek9Canvas = await q(sampleCanvas);
+        await shot('ov-11-medium9.png');
+      }
+      if (process.env.FVE_SMOKE_OV_VARIANT === 'crop') {
+        // Crop variant — Hamza's real project shape (Untitled.clipcraft.json): the SAME
+        // 1080p file on main + overlay, the overlay clip CROPPED (top/bottom) and scaled
+        // 2.61x. A cropped overlay takes the keyed-canvas path (video element hidden,
+        // canvas shows the frame). Evidence samples BOTH the video element and the
+        // canvas that is actually on screen.
+        const bigSrc = path.join(mediaDir, 'big.mp4');
+        if (!fs.existsSync(bigSrc)) {
+          execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=30:duration=12',
+            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=12', '-shortest', '-pix_fmt', 'yuv420p', bigSrc]);
+        }
+        const mBig = await probe(bigSrc);
+        const item = { id: 'mB', path: bigSrc, name: 'big.mp4', ...mBig };
+        const sampleCanvas = `(() => {
+          const cv = document.querySelector('.slot.ov canvas.keyed');
+          if (!cv) return { found: false };
+          const out = { found: true, display: getComputedStyle(cv).display, w: cv.width, h: cv.height };
+          try {
+            const c2 = document.createElement('canvas'); c2.width = 32; c2.height = 32;
+            const ctx = c2.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(cv, 0, 0, 32, 32);
+            const all = ctx.getImageData(0, 0, 32, 32).data;
+            let r = 0, g = 0, b = 0, a = 0;
+            for (let i = 0; i < all.length; i += 4) { r += all[i]; g += all[i + 1]; b += all[i + 2]; a += all[i + 3]; }
+            const n = 32 * 32;
+            out.mean = [+((r / n)).toFixed(1), +((g / n)).toFixed(1), +((b / n)).toFixed(1), +((a / n)).toFixed(1)];
+          } catch (e) { out.sampleError = e.message; }
+          return out;
+        })()`;
+        const mkProj = (crop, extra = {}) => ({
+          name: 'Crop overlay', ratio: '9:16', resolution: 720, width: 1080, height: 1920, fps: 30, background: '#000000',
+          media: [item],
+          videoClips: [{ id: 'v1', mediaId: 'mB', in: 0, out: 12, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+          overlayClips: [{ id: 'ov1', mediaId: 'mB', in: 0, out: 12, start: 0, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null,
+            transform: { scale: 2.61, scaleX: 1, scaleY: 1, uniform: true, x: 0, y: 0, rot: 0 }, ...(crop ? { crop } : {}), ...extra }],
+          audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+        });
+        // 1) Hamza's crop (top/bottom cut).
+        await q(`window.__fve.load(${JSON.stringify(mkProj({ l: 0, t: 0.16234715289817364, r: 0, b: 0.14005925706556877 }))})`);
+        await wait(400);
+        await q(`window.__fve.seek(5)`);
+        await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && v.readyState >= 2; })()`, 15000);
+        await wait(800);
+        result.cropVideoEl = await q(sampleJs('.slot.ov video'));
+        result.cropCanvas = await q(sampleCanvas);
+        await shot('ov-7-crop.png');
+        // 2) Control: same everything, NO crop (plain element path).
+        await q(`window.__fve.load(${JSON.stringify(mkProj(null))})`);
+        await wait(400);
+        await q(`window.__fve.seek(5)`);
+        await wait(800);
+        result.noCropVideoEl = await q(sampleJs('.slot.ov video'));
+        result.noCropCanvas = await q(sampleCanvas);
+        await shot('ov-8-nocrop.png');
+        // 3) Crop + seek to a second position (canvas redraw on seek?).
+        await q(`window.__fve.load(${JSON.stringify(mkProj({ l: 0, t: 0.16234715289817364, r: 0, b: 0.14005925706556877 }))})`);
+        await wait(400);
+        await q(`window.__fve.seek(2)`);
+        await wait(800);
+        result.crop2VideoEl = await q(sampleJs('.slot.ov video'));
+        result.crop2Canvas = await q(sampleCanvas);
+        await q(`window.__fve.seek(9)`);
+        await wait(800);
+        result.crop9VideoEl = await q(sampleJs('.slot.ov video'));
+        result.crop9Canvas = await q(sampleCanvas);
+        await shot('ov-9-crop9.png');
+      }
+      if (process.env.FVE_SMOKE_OV_VARIANT === 'codec') {
+        // Codec variant: overlay (and, swapped, main) sources Chromium cannot decode
+        // (HEVC, 10-bit H.264) with NO preview proxy on the media item yet — the state
+        // between import and the background proxy landing, or forever if it failed.
+        const codecDir = '/tmp/cc-codec';
+        const mHevc = await probe(path.join(codecDir, 'hevc.mp4'));
+        const mHi10 = await probe(path.join(codecDir, 'hi10.mp4'));
+        const base = { ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000', audioClips: [], stickerClips: [], effectClips: [], textClips: [] };
+        const ovClip = (mediaId) => ({ id: 'ov1', mediaId, in: 0, out: 6, start: 3, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null, transform: { scale: 0.5, x: 0, y: 0 } });
+        const mainClip = (mediaId, out) => ({ id: 'v1', mediaId, in: 0, out, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null });
+        const mainItem = { id: 'm0', path: mainSrc, name: 'main.mp4', ...mMain };
+        // 1) HEVC as the overlay.
+        await q(`window.__fve.load(${JSON.stringify({ ...base, name: 'HEVC overlay',
+          media: [mainItem, { id: 'mH', path: path.join(codecDir, 'hevc.mp4'), name: 'hevc.mp4', ...mHevc }],
+          videoClips: [mainClip('m0', 12)], overlayClips: [ovClip('mH')] })})`);
+        await wait(400);
+        await q(`window.__fve.seek(5)`);
+        await wait(1500);
+        result.hevcOverlayEarly = await q(sampleJs('.slot.ov video'));
+        await shot('ov-5-hevc-early.png');
+        await wait(15000);
+        result.hevcOverlayLate = await q(sampleJs('.slot.ov video'));
+        result.hevcMediaLate = await q(`window.__fve.exportData().project.media.find((m) => m.id === 'mH')`);
+        await shot('ov-6-hevc-late.png');
+        // 2) HEVC as the MAIN clip, red overlay above it.
+        const mRed = await probe(ovSrc);
+        await q(`window.__fve.load(${JSON.stringify({ ...base, name: 'HEVC main',
+          media: [{ id: 'mH', path: path.join(codecDir, 'hevc.mp4'), name: 'hevc.mp4', ...mHevc }, { id: 'm1', path: ovSrc, name: 'overlay-red.mp4', ...mRed }],
+          videoClips: [mainClip('mH', 6)], overlayClips: [{ ...ovClip('m1'), start: 1, out: 5 }] })})`);
+        await wait(400);
+        await q(`window.__fve.seek(2)`);
+        await wait(1500);
+        result.hevcMainEarly = await q(sampleJs('.stage .slot:not(.ov) video'));
+        await wait(12000);
+        result.hevcMainLate = await q(sampleJs('.stage .slot:not(.ov) video'));
+        // 3) 10-bit H.264 as the overlay.
+        await q(`window.__fve.load(${JSON.stringify({ ...base, name: 'Hi10 overlay',
+          media: [mainItem, { id: 'mT', path: path.join(codecDir, 'hi10.mp4'), name: 'hi10.mp4', ...mHi10 }],
+          videoClips: [mainClip('m0', 12)], overlayClips: [ovClip('mT')] })})`);
+        await wait(400);
+        await q(`window.__fve.seek(5)`);
+        await wait(1500);
+        result.hi10OverlayEarly = await q(sampleJs('.slot.ov video'));
+        await wait(15000);
+        result.hi10OverlayLate = await q(sampleJs('.slot.ov video'));
+        result.hi10MediaLate = await q(`window.__fve.exportData().project.media.find((m) => m.id === 'mT')`);
+      }
+      // E. Seek BACK to the range start after having left it (element re-entry).
+      await q(`window.__fve.seek(0.5)`);
+      await wait(400);
+      await q(`window.__fve.seek(3.4)`);
+      result.ovReadyE = await until(`(() => { const v = document.querySelector('.slot.ov video'); return v && v.readyState >= 2 && Math.abs(v.currentTime - 0.4) < 0.3; })()`, 12000);
+      await wait(600);
+      result.seek34 = await q(sampleJs('.slot.ov video'));
+      await shot('ov-4-seek34.png');
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'subtitles') {
+    // Subtitles panel + user caption templates + export progress (2026-11-05):
+    // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap
+    // and a long static cue), drives the Captions tab, then exports twice —
+    // once with the static-frame skip disabled (__ccNoStaticSkip) and once
+    // with it on — sampling the encoding view's % and comparing frame hashes.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'clip.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=14',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=14', '-shortest', '-pix_fmt', 'yuv420p', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const items = [{ id: 'm0', path: src, name: 'clip.mp4', kind: 'video', ...probed }];
+      const style = {
+        font: 'cairo', size: 64, bold: true, color: '#ffffff', y: 0.8, caption: true, source: 'srt', template: 'cap-classic',
+        stroke: { width: 5, color: '#000000' }, highlight: { mode: 'none' },
+        animIn: { id: 'none', dur: 0 }, animOut: { id: 'none', dur: 0 }, animLoop: { id: 'none', speed: 1 },
+      };
+      const p = {
+        name: 'Subtitles smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: items.map((m, i) => ({ ...m, id: `m${i}` })),
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 14, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [],
+        textClips: [
+          { ...style, id: 's1', text: 'أهلا بالعالم', start: 0.5, duration: 2 },
+          { ...style, id: 's2', text: 'Second cue stays', start: 8, duration: 4.5 },
+        ],
+      };
+      // Enter the editor first (fresh profiles start on Home; dismiss the tour).
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      result.at='load';
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      result.at='tab';
+      await q(`window.__fve.tab('captions')`);
+      result.at='panel';
+      result.panelRows = await until(`document.querySelectorAll('.sub-panel .sub-row').length === 2`, 10000)
+        ? await q(`document.querySelectorAll('.sub-panel .sub-row').length`) : 0;
+      result.panelHead = await q(`document.querySelector('.sub-panel-head')?.innerText || ''`);
+      await shot('sub-1-panel.png');
+      // Edit the second cue's text in the panel; the store clip must change.
+      await q(`(() => { const ta = document.querySelectorAll('.sub-panel .sub-text')[1];
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(ta, 'Edited in the panel'); ta.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await wait(300);
+      result.editedText = await q(`window.__fve.exportData().project.textClips.find((c) => c.id === 's2')?.text`);
+      // Clicking the first cue seeks the playhead to its start (0.5 s).
+      await q(`document.querySelectorAll('.sub-panel .sub-row')[0].click()`);
+      await wait(400);
+      result.timeAfterCueClick = await q(`document.querySelector('.tc')?.textContent || ''`);
+      // Save the current SRT style as a user template.
+      await q(`(() => { const inp = document.querySelector('input[aria-label="Caption template name"]');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(inp, 'Smoke Style'); inp.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await wait(200);
+      await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save current style').click()`);
+      await wait(300);
+      result.savedTemplates = await q(`JSON.parse(localStorage.getItem('clipcraft.captionTemplates') || '[]').map((t) => t.name)`);
+      result.tplRowShown = await q(`!!document.querySelector('.user-tpl-row')`);
+      // Restyle all SRT captions, then re-apply the saved template: style returns.
+      await q(`window.__fve.dispatch({ type: 'styleSrtCaptions', patch: { color: '#ff0000', font: 'poppins' } })`);
+      await wait(200);
+      result.restyled = await q(`window.__fve.exportData().project.textClips.find((c) => c.id === 's1')?.color`);
+      await q(`[...document.querySelectorAll('.user-tpl-row button')].find((b) => b.textContent.trim() === 'Apply').click()`);
+      await wait(300);
+      const back = await q(`window.__fve.exportData().project.textClips.find((c) => c.id === 's1')`);
+      result.reapplied = back && { color: back.color, font: back.font };
+      await shot('sub-2-template.png');
+      // Two real exports: A with the static skip off, B with it on.
+      const exportOnce = async (label) => {
+        await q(`window.__samples = []; window.__timer = setInterval(() => {
+          const pct = document.querySelector('.x-enc-pct')?.textContent;
+          const stage = document.querySelector('.x-enc-stage')?.textContent;
+          const time = document.querySelector('.x-enc-time')?.textContent;
+          if (pct) window.__samples.push([Date.now(), stage, pct, time]);
+        }, 50)`);
+        const t0 = Date.now();
+        await q(`window.__fve.exportNow()`);
+        const wall = Date.now() - t0;
+        await q(`clearInterval(window.__timer)`);
+        const samples = await q(`window.__samples`);
+        const file = await q(`document.querySelector('.export-file-path')?.textContent || ''`);
+        await q(`[...document.querySelectorAll('.modal .btn')].find((b) => b.textContent.trim() === 'OK')?.click()`);
+        await wait(300);
+        return { label, wall, file, samples };
+      };
+      await q(`window.__ccNoStaticSkip = true`);
+      result.exportA = await exportOnce('no-static-skip');
+      if (result.exportA.file) fs.copyFileSync(result.exportA.file, path.join(dir, 'exportA.mp4'));
+      await q(`delete window.__ccNoStaticSkip`);
+      result.exportB = await exportOnce('static-skip');
+      if (result.exportB.file) fs.copyFileSync(result.exportB.file, path.join(dir, 'exportB.mp4'));
+      // Frame hashes of both outputs must agree (the skip changes no pixels).
+      const framemd5 = (file) => execFileSync(ff, ['-hide_banner', '-loglevel', 'error', '-i', file, '-map', '0:v', '-f', 'framemd5', '-'])
+        .toString().split('\n').filter((l) => l && !l.startsWith('#')).map((l) => l.trim().split(/\s+/).pop());
+      if (result.exportA.file && result.exportB.file) {
+        const ha = framemd5(path.join(dir, 'exportA.mp4'));
+        const hb = framemd5(path.join(dir, 'exportB.mp4'));
+        result.frameHash = { framesA: ha.length, framesB: hb.length, identical: JSON.stringify(ha) === JSON.stringify(hb) };
+        result.sizes = { a: fs.statSync(path.join(dir, 'exportA.mp4')).size, b: fs.statSync(path.join(dir, 'exportB.mp4')).size };
+      }
+      await shot('sub-3-done.png');
     } catch (e) {
       result.error = e.message;
     }
@@ -289,6 +781,7 @@ module.exports = async function smoke(win, app, dir) {
       main[0] = { ...main[0], filter: 'vivid' };
       main[1] = { ...main[1], filter: 'lut:slay-04-film.cube' };
       Object.assign(p, { videoClips: main, overlayClips: [], audioClips: [], textClips: [], stickerClips: [], effectClips: [] });
+      result.at='load';
       await q(`window.__fve.load(${JSON.stringify(p)})`);
       await wait(2500);
       const out = path.join(dir, 'ui-export.mp4');
@@ -1149,6 +1642,7 @@ module.exports = async function smoke(win, app, dir) {
     try {
       await wait(800);
       const p = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+      result.at='load';
       await q(`window.__fve.load(${JSON.stringify(p)})`);
       await wait(1000);
       await q(`document.querySelector('.stats-note .icon-btn')?.click(); window.__fve.select({ track: 'video', id: ${JSON.stringify(p.videoClips[0].id)} })`);
@@ -1190,6 +1684,7 @@ module.exports = async function smoke(win, app, dir) {
     try {
       await wait(800);
       const p = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+      result.at='load';
       await q(`window.__fve.load(${JSON.stringify(p)})`);
       await wait(1200);
       const ov = p.overlayClips[0];
@@ -1221,6 +1716,7 @@ module.exports = async function smoke(win, app, dir) {
     try {
       await wait(800);
       const p = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+      result.at='load';
       await q(`window.__fve.load(${JSON.stringify(p)})`);
       await wait(1200);
       await q(`document.querySelector('.stats-note .icon-btn')?.click(); window.__fve.seek(2); window.__fve.tab('adjust')`);
@@ -1248,6 +1744,7 @@ module.exports = async function smoke(win, app, dir) {
     try {
       await wait(800);
       const p = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+      result.at='load';
       await q(`window.__fve.load(${JSON.stringify(p)})`);
       await wait(1000);
       await q(`document.querySelector('.stats-note .icon-btn')?.click(); document.querySelector('[aria-label="Settings"]').click()`);
@@ -1355,6 +1852,7 @@ module.exports = async function smoke(win, app, dir) {
     try {
       await wait(800);
       const p = JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'));
+      result.at='load';
       await q(`window.__fve.load(${JSON.stringify(p)})`);
       await wait(1000);
       await q(`window.__fve.select({ track: 'video', id: ${JSON.stringify(p.videoClips[0].id)} })`);

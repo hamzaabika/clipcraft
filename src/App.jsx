@@ -310,10 +310,18 @@ export default function App() {
   }, [firstVideoThumb, firstVideoPoster]);
   // Ask for visuals that are missing (older projects, files imported before this feature, moved caches).
   // Below Full playback quality, every video also needs its copy for the level (levelCopyState 'fallback':
-  // not made yet; 'failed' is not retried). While the copy is missing the player uses a fallback file.
+  // not made yet; 'failed' is retried once per session by the main process). While the copy is missing
+  // the player uses a fallback file.
+  // A video carrying saved copy pointers (proxy / lightProxy / proxies[q]) is also queued: those are
+  // absolute cache paths saved in the project, and only the main process can check the files still
+  // exist — a pointer whose cache file was deleted otherwise leaves the player on a dead file
+  // (black picture) forever, because 'ready' state never re-queues. Main prunes dead pointers
+  // (pruneDeadCopies) and regenerates; healthy pointers make the round-trip a no-op.
   const mediaKey = project.media.map((m) => `${m.path}|${m.thumbCount ? 1 : 0}|${m.poster ? 1 : 0}|${m.wave ? 1 : 0}|${m.optimizing ? 1 : 0}|${m.lightProxy == null ? 0 : 1}|${m.proxies?.[quality] == null ? 0 : 1}`).join(';') + `|${quality}`;
   useEffect(() => {
-    const missing = project.media.filter((m) => (m.type === 'video' && (!m.thumbCount || !m.poster || m.optimizing || levelCopyState(m, quality) === 'fallback')) || (m.hasAudio && !m.wave));
+    const carriesCopies = (m) => typeof m.proxy === 'string' || typeof m.lightProxy === 'string'
+      || !!(m.proxies && Object.values(m.proxies).some((v) => typeof v === 'string'));
+    const missing = project.media.filter((m) => (m.type === 'video' && (!m.thumbCount || !m.poster || m.optimizing || levelCopyState(m, quality) === 'fallback' || levelCopyState(m, quality) === 'failed' || carriesCopies(m))) || (m.hasAudio && !m.wave));
     if (missing.length) {
       window.api.ensureVisuals(missing.map(({ path, type, duration, hasAudio, width, height, proxy, lightProxy, proxies }) => ({ path, type, duration, hasAudio, width, height, proxy, lightProxy, proxies })));
     }
@@ -1595,6 +1603,16 @@ export default function App() {
     const target = presetTarget || await window.api.exportBegin(name);
     if (target.canceled) return; // stay on the form
     exportCanceled.current = false;
+    // Displayed progress is monotonic across phases: a phase callback can only
+    // move the bar forward. The one genuine reset — the encoder falling back
+    // to the CPU and restarting the encode — is detected in the encoding
+    // callback below (a 0 after a positive encoding value) and re-bases it.
+    exportProgRef.current = { max: 0, enc: null };
+    const setProg = (v) => {
+      const m = Math.max(exportProgRef.current.max, Math.min(1, Math.max(0, v || 0)));
+      exportProgRef.current.max = m;
+      setExporting((e) => e && { ...e, progress: m });
+    };
     // Text frames take the first part of the progress bar when the project has text.
     const textShare = project.textClips.length ? 0.35 : 0;
     // Keep project/eff/name/target on the state: the encoding view renders its spec list
@@ -1603,7 +1621,7 @@ export default function App() {
     let textFrames = 0;
     try {
       textFrames = await renderTextFrames(project, target.frameDir,
-        (p) => setExporting((e) => e && { ...e, progress: p * textShare }), () => exportCanceled.current);
+        (p) => setProg(p * textShare), () => exportCanceled.current);
     } catch (e) {
       await window.api.exportAbort(target.frameDir);
       return setExporting({ error: `Text rendering failed: ${e.message}` });
@@ -1619,7 +1637,7 @@ export default function App() {
     if (fxShare) {
       setExporting((e) => e && { ...e, stage: 'Rendering effects' });
       try {
-        toExport = await renderFxPass(toExport, (p) => setExporting((e) => e && { ...e, progress: textShare + p * fxShare }), () => exportCanceled.current);
+        toExport = await renderFxPass(toExport, (p) => setProg(textShare + p * fxShare), () => exportCanceled.current);
       } catch (e) {
         await window.api.fxClear();
         await window.api.exportAbort(target.frameDir);
@@ -1633,7 +1651,19 @@ export default function App() {
     }
     setExporting((e) => e && { ...e, stage: 'Encoding video' });
     const base = textShare + fxShare;
-    const off = window.api.onExportProgress((p) => setExporting((e) => e && { ...e, progress: base + p * (1 - base) }));
+    const off = window.api.onExportProgress((p) => {
+      const r = exportProgRef.current;
+      if (p === 0 && r.enc !== null && r.enc > 0) {
+        // CPU-fallback reset: the encode restarted from zero — re-base the bar
+        // to the start of the encoding phase instead of clamping it frozen.
+        r.max = base;
+        r.enc = 0;
+        setExporting((e) => e && { ...e, progress: base });
+        return;
+      }
+      r.enc = p;
+      setProg(base + p * (1 - base));
+    });
     const res = await window.api.exportRun(toExport, target, textFrames);
     off();
     if (res.canceled) return setExporting(null);
@@ -1658,6 +1688,7 @@ export default function App() {
     setExporting({ done: true, file: res.file, size, coverNote, progress: 1 });
   };
   const exportCanceled = useRef(false);
+  const exportProgRef = useRef({ max: 0, enc: null });
   const cancelExport = () => {
     exportCanceled.current = true;
     window.api.cancelExport();
@@ -1775,6 +1806,7 @@ export default function App() {
           recorder={recorder} onStartRecord={() => recorder.start(time)} onAddText={addText} onAddTextOver={addTextOver}
           onRecordScreen={() => { setPlaying(false); setScreenOpen(true); }}
           target={target} updateTarget={updateTarget} selectedCount={selectedPictures(project, selection).length}
+          onSeek={seek} onSelect={select}
           onApplyLookToAll={(clip) => dispatch({ type: 'updateMany', updates: [
             ...project.videoClips.filter((c) => !c.gap).map((c) => ({ track: 'video', id: c.id, patch: { grade: { ...(clip.grade || {}) }, adjust: { ...(clip.adjust || {}) } } })),
             ...(project.overlayClips || []).map((c) => ({ track: 'overlay', id: c.id, patch: { grade: { ...(clip.grade || {}) }, adjust: { ...(clip.adjust || {}) } } })),

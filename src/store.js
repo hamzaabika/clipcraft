@@ -231,7 +231,13 @@ export function projectDuration(p) {
 // (src/exportText.js) and the Export dialog's Duration + size estimate both read this
 // function — never projectDuration(), which also counts text/audio/overlay ends.
 export function exportDuration(p) {
-  const v = videoLayout(p.videoClips);
+  // Mirror buildExportArgs exactly: it drops main-track clips whose media is
+  // missing from the project (a clip left behind by a removed/lost file), so a
+  // project carrying such a clip used to show a Duration longer than the
+  // encode's own total — the % denominator. Filter the same way here.
+  const mediaIds = new Set((p.media || []).map((m) => m.id));
+  const clips = (p.videoClips || []).filter((c) => c.gap || mediaIds.has(c.mediaId));
+  const v = videoLayout(clips);
   return v.length ? v[v.length - 1].end : 0;
 }
 
@@ -1158,7 +1164,7 @@ export function qualityTargetSize(width, height, quality) {
 // What state a media item's copy for `quality` is in:
 // 'na' (level Full, not a video, or the source already fits the level), 'ready' (the level's own
 // copy exists), 'fallback' (no copy yet: a smaller copy or the original plays meanwhile), 'failed'
-// (generation failed; not retried until the file is imported again).
+// (generation failed; the main process retries it once per session, then leaves it).
 export function levelCopyState(m, quality) {
   if (!m || m.type !== 'video' || quality === 'full') return 'na';
   const p = m.proxies && typeof m.proxies === 'object' ? m.proxies[quality] : undefined;

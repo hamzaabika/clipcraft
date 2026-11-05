@@ -13,9 +13,13 @@ import GradePanel from './GradePanel.jsx';
 import { LookThumb } from './FilterThumbs.jsx';
 import { FILTER_CATS, filterName } from '../fx/filters.js';
 import { loadPresets, savePresets, upsertPreset, removePreset, presetPatch } from '../fx/presets.js';
+import {
+  loadUserTemplates, saveUserTemplates, upsertUserTemplate, removeUserTemplate, userTemplatePatch,
+  captureStylePatch, loadDefaultTemplateName, saveDefaultTemplateName,
+} from '../text/userTemplates.js';
 import { BUNDLED_LUTS } from '../fx/lut.js';
 import { loadLutLibrary, saveLutLibrary, addLutEntry, removeLutEntry } from '../fx/lutlib.js';
-import { formatTime, previewPath, proxyPrefOn, toFileUrl, uid } from '../store.js';
+import { formatTime, getPlaybackQuality, levelCopyState, previewPath, proxyPrefOn, toFileUrl, uid } from '../store.js';
 import { COLLECTIONS, PACKS, COLLECTION_ITEMS, loadFavorites, saveFavorites, toggleFavorite } from '../fx/collections.js';
 import { parseSRT, regroupSegments } from '../subtitles.js';
 import { DEFAULT_ADJUST, EFFECTS, EFFECT_GROUPS, FILTERS, TRANSITIONS } from '../effects.js';
@@ -153,6 +157,9 @@ function MediaCard({ m, onAdd, onRemove, onOverlay, onPeek, peeking }) {
         {m.optimizing && <span className="asset-opt" title="Making a light preview copy so this video plays smoothly. Export uses the original.">Optimizing…</span>}
         {!m.optimizing && proxyPrefOn() && previewPath(m) !== (m.proxy || m.path) && (
           <span className="asset-opt proxy" title="Plays from a scaled proxy copy at the current playback quality. Export uses the original at full quality.">Proxy</span>
+        )}
+        {!m.optimizing && levelCopyState(m, getPlaybackQuality()) === 'failed' && (
+          <span className="asset-opt failed" title="The preview copy for this file could not be made, so the original file plays. Export always uses the original.">Proxy failed</span>
         )}
         <button className="asset-add" onClick={() => onAdd(m.id)} aria-label={`Add ${m.name} to the timeline`}><Plus size={14} /></button>
         {onOverlay && m.type !== 'audio' && (
@@ -516,7 +523,7 @@ const CAPTION_MODELS = [
   { id: 'darija', name: 'Moroccan Darija (whisper-medium-darija)', size: '540 MB', arabicOnly: true },
 ];
 
-function CaptionsTab({ onAddText, captions, project, dispatch }) {
+function CaptionsTab({ onAddText, captions, project, dispatch, onSeek, onSelect }) {
   const [lang, setLang] = useState('auto');
   const [model, setModel] = useState('base');
   // Cloud engines (item O): the user's own provider key, saved through the same encrypted
@@ -577,15 +584,55 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
   // Imported .srt subtitles: their own clips (source: 'srt'), styled separately from auto captions.
   const srtCount = project.textClips.filter((c) => c.source === 'srt').length;
   const srtFileRef = useRef(null);
-  const [srtTplId, setSrtTplId] = useState('cap-classic');
+  // User caption templates (src/text/userTemplates.js): styles saved from the
+  // SRT captions, persisted in localStorage. srtTplId holds a built-in
+  // template id, or `user:<name>` for one of these.
+  const [userTpls, setUserTpls] = useState(() => loadUserTemplates(localStorage));
+  const [tplName, setTplName] = useState('');
+  const [defaultTplName, setDefaultTplName] = useState(() => loadDefaultTemplateName(localStorage));
+  const [srtTplId, setSrtTplId] = useState(() => {
+    const d = loadDefaultTemplateName(localStorage);
+    return d && loadUserTemplates(localStorage).some((t) => t.name === d) ? `user:${d}` : 'cap-classic';
+  });
   const [srtNote, setSrtNote] = useState('');
+  const storeUserTpls = (list) => { setUserTpls(list); saveUserTemplates(localStorage, list); };
+  const srtClip = project.textClips.find((c) => c.source === 'srt');
+  const saveCurrentSrtStyle = () => {
+    if (!srtClip || !tplName.trim()) return;
+    storeUserTpls(upsertUserTemplate(userTpls, srtClip, tplName));
+    setSrtTplId(`user:${tplName.trim()}`);
+    setTplName('');
+    setSrtNote(`Saved the current subtitle style as a template.`);
+  };
+  const applyUserTpl = (t) => {
+    setSrtTplId(`user:${t.name}`);
+    dispatch({ type: 'styleSrtCaptions', patch: { ...userTemplatePatch(t), template: `user:${t.name}` } });
+  };
+  const deleteUserTpl = (t) => {
+    storeUserTpls(removeUserTemplate(userTpls, t.name));
+    if (defaultTplName === t.name) { setDefaultTplName(''); saveDefaultTemplateName(localStorage, ''); }
+    if (srtTplId === `user:${t.name}`) setSrtTplId('cap-classic');
+  };
+  const makeDefaultTpl = (t) => {
+    setDefaultTplName(t.name);
+    saveDefaultTemplateName(localStorage, t.name);
+    applyUserTpl(t);
+  };
+  const resolveSrtTemplate = () => {
+    if (srtTplId.startsWith('user:')) {
+      const t = userTpls.find((x) => x.name === srtTplId.slice(5));
+      if (t) return { patch: userTemplatePatch(t), id: srtTplId };
+    }
+    const t = TEXT_TEMPLATES.find((x) => x.id === srtTplId) || tpl;
+    return { patch: t.patch, id: t.id };
+  };
   const onSrtFile = async (e) => {
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
     const cues = regroupSegments(parseSRT(await f.text()), wpl);
     if (!cues.length) { setSrtNote('No subtitle cues were found in that file.'); return; }
-    const t = TEXT_TEMPLATES.find((x) => x.id === srtTplId) || tpl;
+    const t = resolveSrtTemplate();
     dispatch({ type: 'importSrtCaptions', style: { ...t.patch, template: t.id }, segments: cues.map((c) => ({ ...c, id: uid() })) });
     setSrtNote(`Imported ${cues.length} subtitle${cues.length > 1 ? 's' : ''} from ${f.name}.`);
   };
@@ -593,6 +640,14 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
     setSrtTplId(t.id);
     dispatch({ type: 'styleSrtCaptions', patch: { ...t.patch, template: t.id } });
   };
+  // Full subtitle text panel: every subtitle clip (SRT imports and auto
+  // captions) in timeline order, editable in place.
+  const [subQuery, setSubQuery] = useState('');
+  const subtitleClips = project.textClips
+    .filter((c) => c.source === 'srt' || c.caption)
+    .slice()
+    .sort((a, b) => a.start - b.start);
+  const subShown = subtitleClips.filter((c) => !subQuery.trim() || String(c.text || '').toLowerCase().includes(subQuery.trim().toLowerCase()));
   const busy = !!captions.busy;
   return (
     <>
@@ -720,12 +775,62 @@ function CaptionsTab({ onAddText, captions, project, dispatch }) {
           <>
             <p className="muted small">Template for all imported subtitles:</p>
             <TemplateGrid captionOnly activeId={srtTplId} onPick={pickSrtStyle} />
+            {!!userTpls.length && (
+              <>
+                <p className="muted small">My templates:</p>
+                <div className="user-tpl-list">
+                  {userTpls.map((t) => (
+                    <div key={t.name} className={`user-tpl-row ${srtTplId === `user:${t.name}` ? 'on' : ''}`}>
+                      <span className="user-tpl-name">{t.name}{defaultTplName === t.name ? ' · default' : ''}</span>
+                      <button className="btn btn-sm" onClick={() => applyUserTpl(t)}>Apply</button>
+                      {defaultTplName !== t.name && (
+                        <button className="btn btn-sm btn-ghost" onClick={() => makeDefaultTpl(t)} title="Use this style for the next .srt import">Set default</button>
+                      )}
+                      <button className="btn btn-sm btn-ghost" aria-label={`Delete template ${t.name}`} onClick={() => deleteUserTpl(t)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <div className="preset-save">
+              <input type="text" value={tplName} placeholder="Template name…" aria-label="Caption template name"
+                onChange={(e) => setTplName(e.target.value)} />
+              <button className="btn btn-sm" disabled={!tplName.trim()} onClick={saveCurrentSrtStyle}>Save current style</button>
+            </div>
+            <p className="muted small">Saving keeps the style your imported subtitles have now — font, colours, background, outline, shadow, position, animation and word highlight — so the next file starts from it in one click.</p>
             <button className="btn btn-ghost btn-sm" onClick={() => dispatch({ type: 'removeSrtCaptions' })}>
               <Trash2 size={14} /> Remove imported subtitles
             </button>
           </>
         )}
       </div>
+      {subtitleClips.length > 0 && (
+        <div className="card sub-panel">
+          <div className="sub-panel-head">
+            <b>Subtitles</b>
+            <span className="muted small">{subtitleClips.length} cue{subtitleClips.length > 1 ? 's' : ''}</span>
+          </div>
+          <SearchBox value={subQuery} onChange={setSubQuery} placeholder="Search subtitle text…" ariaLabel="Search subtitle text" />
+          <div className="sub-list">
+            {subShown.slice(0, 300).map((c) => {
+              const idx = subtitleClips.indexOf(c);
+              return (
+                <div key={c.id} className="sub-row" onClick={() => { onSeek?.(c.start); onSelect?.({ track: 'text', id: c.id }); }}>
+                  <span className="sub-idx">{idx + 1}</span>
+                  <span className="sub-times">{formatTime(c.start)} – {formatTime(c.start + c.duration)}</span>
+                  <textarea className="sub-text" dir="auto" rows={2} value={c.text || ''} aria-label={`Subtitle ${idx + 1} text`}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => dispatch({ type: 'update', track: 'text', id: c.id, patch: { text: e.target.value } })} />
+                </div>
+              );
+            })}
+            {!subShown.length && <p className="muted small">No cues match that search.</p>}
+            {subShown.length > 300 && <p className="muted small">Showing the first 300 matches — narrow the search to reach the rest.</p>}
+          </div>
+        </div>
+      )}
       <div className="card">
         <b>Manual caption</b>
         <p className="muted">A caption line at the bottom of the frame, at the playhead.</p>
