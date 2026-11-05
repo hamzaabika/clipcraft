@@ -1083,6 +1083,109 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'reframe') {
+    // Auto-reframe 9:16 (v1.1.8): a real portrait sits in a wide scene; the video window pans
+    // across it, so the face crosses the frame (fractions 0.560 -> 0.326 over 6 s). Clicking
+    // the TopBar's Vertical button must track it and switch to a NEW 9:16 project copy whose
+    // clip is cover-scaled with x keyframes following the face; the export is then re-analysed
+    // with the same detector: the face must sit at the export's centre.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync, spawn } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const photo = path.join(mediaDir, 'portrait.jpg');
+      const talk = path.join(mediaDir, 'talk.mp4');
+      if (!fs.existsSync(talk)) {
+        if (!fs.existsSync(photo)) {
+          // Node's https (system CA store), not Chromium's net stack — the sandbox's TLS
+          // proxy is only in the system store.
+          const buf = await new Promise((resolve, reject) => {
+            const get = (url) => require('https').get(url, (r) => {
+              if (r.statusCode >= 300 && r.statusCode < 400) return get(r.headers.location);
+              if (r.statusCode !== 200) return reject(new Error(`portrait download: HTTP ${r.statusCode}`));
+              const chunks = [];
+              r.on('data', (c) => chunks.push(c));
+              r.on('end', () => resolve(Buffer.concat(chunks)));
+            }).on('error', reject);
+            get('https://upload.wikimedia.org/wikipedia/commons/8/8d/President_Barack_Obama.jpg');
+          });
+          fs.writeFileSync(photo, buf);
+        }
+        // Scene: the portrait's head-and-shoulders (top 55%; face centre at (0.493, 0.364) of
+        // it, measured with the detector) scaled to 720 tall (1048 wide) at x=200 of a
+        // 2560x720 black canvas. Frames are windowed from the scene in-process (this ffmpeg
+        // build does not evaluate crop/drawbox expressions): window x = 50t.
+        const scene = path.join(mediaDir, 'scene.png');
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-i', photo, '-f', 'lavfi', '-i', 'color=c=black:s=2560x720',
+          '-filter_complex', '[0:v]crop=2687:1846:0:0,scale=-2:720[p];[1:v][p]overlay=200:0:shortest=1[out]',
+          '-map', '[out]', '-frames:v', '1', scene]);
+        const raw = execFileSync(ff, ['-v', 'error', '-i', scene, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1e8 });
+        const enc = spawn(ff, ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '1280x720',
+          '-r', '30', '-i', '-', '-pix_fmt', 'yuv420p', talk]);
+        const rowBytes = 1280 * 3;
+        for (let n = 0; n < 180; n++) {
+          const ox = Math.round((50 * n) / 30);
+          const frame = Buffer.alloc(1280 * 720 * 3);
+          for (let y = 0; y < 720; y++) raw.copy(frame, y * rowBytes, (y * 2560 + ox) * 3, (y * 2560 + ox) * 3 + rowBytes);
+          if (!enc.stdin.write(frame)) await new Promise((r) => enc.stdin.once('drain', r));
+        }
+        enc.stdin.end();
+        await new Promise((r) => enc.on('close', r));
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(talk);
+      const p = {
+        id: 'orig118', name: 'Reframe smoke', ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: talk, name: 'talk.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 6, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(500);
+      await shot('rf-1-before.png');
+      await q(`document.querySelector('button[aria-label="Make vertical copy"]').click()`);
+      result.switched = await until(`window.__fve.exportData().project.ratio === '9:16'`, 180000);
+      result.jobNote = await q(`document.querySelector('.render-job')?.innerText || null`);
+      const copy = await q(`window.__fve.exportData().project`);
+      result.name = copy.name;
+      result.newId = copy.id !== 'orig118';
+      result.size = [copy.width, copy.height];
+      const clip = copy.videoClips[0];
+      result.scale = clip.transform && clip.transform.scale;
+      const keys = (clip.keyframes && clip.keyframes.x) || [];
+      result.keyCount = keys.length;
+      result.firstKey = keys.length ? keys[0].v : null;
+      result.lastKey = keys.length ? keys[keys.length - 1].v : null;
+      await wait(600);
+      await shot('rf-2-after.png');
+      // Export the copy through the real UI flow and re-detect the face in the result.
+      const out = path.join(dir, 'ui-export.mp4');
+      fs.rmSync(out, { force: true });
+      await q('window.__fve.exportNow()');
+      for (let t = 0; t < 400000; t += 1000) { if (await q(`!!document.querySelector('.modal-icon.ok, .modal-icon.error')`)) break; await wait(1000); }
+      result.exportTitle = await q(`document.querySelector('#export-title')?.textContent || null`);
+      const info = await require('./ffmpeg.cjs').probe(out);
+      result.export = [info.width, info.height, Math.round(info.duration * 10) / 10];
+      const reframe = require('./reframe.cjs');
+      const again = await reframe.analyze({ path: out, width: info.width, height: info.height, duration: info.duration, fps: 30 },
+        { dir: path.join(dir, 'reframe-test'), cacheDir: path.join(dir, 'reframe-verify'), ffmpegPath: ff, toSdr: require('./ffmpeg.cjs').toSdr, from: 0, to: 6 });
+      const xs = again.points.filter((pt) => pt.x !== null).map((pt) => pt.x).sort((a, b) => a - b);
+      result.exportFaceDetected = again.detected;
+      result.exportFaceCx = xs.length ? Math.round(xs[Math.floor(xs.length / 2)] * 1000) / 1000 : null;
+      await shot('rf-3-exported.png');
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'subtitles') {
     // Subtitles panel + user caption templates + export progress (2026-11-05):
     // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap

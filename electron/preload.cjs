@@ -214,6 +214,14 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('matting:progress', handler);
     return () => ipcRenderer.removeListener('matting:progress', handler);
   },
+  // Auto-reframe: run(items) -> { results } | { canceled } | { error }; progress: { stage, fraction }.
+  reframeRun: (items) => ipcRenderer.invoke('reframe:run', items),
+  reframeCancel: () => ipcRenderer.invoke('reframe:cancel'),
+  onReframeProgress: (cb) => {
+    const handler = (_e, p) => cb(p);
+    ipcRenderer.on('reframe:progress', handler);
+    return () => ipcRenderer.removeListener('reframe:progress', handler);
+  },
   aiTest: (draft) => ipcRenderer.invoke('ai:test', draft),
   aiModels: (draft) => ipcRenderer.invoke('ai:models', draft),
   captionsStatus: () => ipcRenderer.invoke('captions:status'),

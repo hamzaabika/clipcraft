@@ -62,6 +62,10 @@ MIT-licensed.
 - **Whisper** (whisper.cpp, MIT): not bundled — the binary and models are
   downloaded on first use, at the user's request, from the official
   whisper.cpp GitHub releases and HuggingFace.
+- **Ultra-Light-Fast-Generic-Face-Detector** (MIT, © 2019 linzai) — the
+  RFB-320 ONNX model used by auto-reframe's face tracking: not bundled —
+  downloaded on first use, at the user's request, from the project's own
+  GitHub repository, and verified by size and SHA-256 before use.
 
 ### Fonts
 The bundled fonts (via Fontsource packages) are licensed under the **SIL

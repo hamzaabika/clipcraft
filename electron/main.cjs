@@ -1167,6 +1167,46 @@ ipcMain.handle('matting:run', async (_e, item) => {
 });
 ipcMain.handle('matting:cancel', () => { if (mattingJob) mattingJob.canceled = true; });
 
+// Auto-reframe 9:16: face tracking over the main track's ranges (electron/reframe.cjs), one job at a
+// time. The renderer sends one item per video clip; progress goes to the interface as reframe:progress
+// (fraction of the whole job). The result is a face-centre path per clip; src/reframe.js builds the
+// vertical project copy from the paths.
+const reframe = require('./reframe.cjs');
+const reframeDir = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'reframe-test') : path.join(app.getPath('userData'), 'reframe'));
+const reframeCache = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'reframe-cache-test') : path.join(app.getPath('userData'), 'reframe-cache'));
+let reframeJob = null; // { canceled }
+ipcMain.handle('reframe:run', async (_e, items) => {
+  if (reframeJob) return { error: 'Another video is being processed. Wait for it to finish.' };
+  const list = (items || []).filter((x) => x && x.item && x.item.path && fs.existsSync(x.item.path));
+  if (!list.length) return { error: 'The video files were not found.' };
+  const job = { canceled: false };
+  reframeJob = job;
+  const send = (stage, fraction) => { if (win && !win.isDestroyed()) win.webContents.send('reframe:progress', { stage, fraction }); };
+  try {
+    if (!reframe.status(reframeDir()).installed) {
+      send('download', 0);
+      await reframe.install(reframeDir(), (f) => send('download', f), net.fetch);
+    }
+    const { ffmpegPath, toSdr } = require('./ffmpeg.cjs');
+    const results = {};
+    for (let i = 0; i < list.length; i++) {
+      const { clipId, item, from, to } = list[i];
+      send('faces', i / list.length);
+      results[clipId] = await reframe.analyze(item, {
+        dir: reframeDir(), cacheDir: reframeCache(), ffmpegPath, toSdr, from, to,
+        onProgress: (f) => send('faces', (i + f) / list.length), isCanceled: () => job.canceled,
+      });
+    }
+    send('faces', 1);
+    return { results };
+  } catch (e) {
+    return e.canceled ? { canceled: true } : { error: e.message };
+  } finally {
+    reframeJob = null;
+  }
+});
+ipcMain.handle('reframe:cancel', () => { if (reframeJob) reframeJob.canceled = true; });
+
 // Background pictures for scenes without footage (CraftAI's add_scene), kept with the library downloads.
 ipcMain.handle('scene:make', async (_e, opts) => {
   try {
