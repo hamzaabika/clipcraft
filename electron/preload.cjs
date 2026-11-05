@@ -222,6 +222,14 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('reframe:progress', handler);
     return () => ipcRenderer.removeListener('reframe:progress', handler);
   },
+  // Beat cuts: analyze(project) -> { bpm, beats } | { canceled } | { error }; progress: { stage, fraction }.
+  beatsAnalyze: (project) => ipcRenderer.invoke('beats:analyze', project),
+  beatsCancel: () => ipcRenderer.invoke('beats:cancel'),
+  onBeatsProgress: (cb) => {
+    const handler = (_e, p) => cb(p);
+    ipcRenderer.on('beats:progress', handler);
+    return () => ipcRenderer.removeListener('beats:progress', handler);
+  },
   aiTest: (draft) => ipcRenderer.invoke('ai:test', draft),
   aiModels: (draft) => ipcRenderer.invoke('ai:models', draft),
   captionsStatus: () => ipcRenderer.invoke('captions:status'),

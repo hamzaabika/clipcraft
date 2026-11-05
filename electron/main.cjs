@@ -1207,6 +1207,34 @@ ipcMain.handle('reframe:run', async (_e, items) => {
 });
 ipcMain.handle('reframe:cancel', () => { if (reframeJob) reframeJob.canceled = true; });
 
+// Beat cuts: analyse the project soundtrack's beat grid (electron/beats.cjs), one job
+// at a time. Progress goes to the interface as beats:progress (stage + fraction of the
+// whole job); the renderer stores the result on the project (src/beats.js reads it).
+const beats = require('./beats.cjs');
+const beatsCache = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'beats-cache-test') : path.join(app.getPath('userData'), 'beats-cache'));
+let beatsJob = null; // { canceled }
+ipcMain.handle('beats:analyze', async (_e, project) => {
+  if (beatsJob) return { error: 'Another video is being processed. Wait for it to finish.' };
+  const job = { canceled: false };
+  beatsJob = job;
+  const send = (stage, fraction) => { if (win && !win.isDestroyed()) win.webContents.send('beats:progress', { stage, fraction }); };
+  try {
+    send('render', 0);
+    const r = await beats.analyzeProject(project, {
+      cacheDir: beatsCache(),
+      onProgress: (stage, f) => send(stage, f),
+      isCanceled: () => job.canceled,
+    });
+    send('analyze', 1);
+    return { bpm: r.bpm, beats: r.beats, cached: !!r.cached };
+  } catch (e) {
+    return e.canceled ? { canceled: true } : { error: e.message };
+  } finally {
+    beatsJob = null;
+  }
+});
+ipcMain.handle('beats:cancel', () => { if (beatsJob) beatsJob.canceled = true; });
+
 // Background pictures for scenes without footage (CraftAI's add_scene), kept with the library downloads.
 ipcMain.handle('scene:make', async (_e, opts) => {
   try {

@@ -779,6 +779,11 @@ kbd {
 }
 .marker:hover { color: #fde68a; transform: scale(1.15); }
 .marker-line { position: absolute; top: 26px; bottom: 0; width: 1px; background: rgba(251, 191, 36, 0.45); z-index: 3; pointer-events: none; }
+/* Beat cuts: the detected grid — a violet diamond low in the ruler per beat, a faint
+   line down the tracks, and the tempo chip in the timeline toolbar. */
+.beat-tick { position: absolute; top: 17px; width: 7px; height: 7px; margin-left: -3.5px; background: var(--accent); transform: rotate(45deg); border-radius: 1px; z-index: 2; pointer-events: none; }
+.beat-line { position: absolute; top: 26px; bottom: 0; width: 1px; background: rgba(139, 92, 246, 0.14); z-index: 1; pointer-events: none; }
+.beat-bpm { font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 2px; }
 .razor-line { position: absolute; top: 0; bottom: 0; width: 1px; background: #fff; box-shadow: 0 0 6px var(--primary); z-index: 7; pointer-events: none; }
 .razor-time { position: absolute; top: 4px; transform: translateX(6px); z-index: 8; pointer-events: none; background: var(--surface-3, #23233a); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 1px 6px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .tl-scroll.razor, .tl-scroll.razor .clip, .tl-scroll.razor .clip .handle { cursor: crosshair; }

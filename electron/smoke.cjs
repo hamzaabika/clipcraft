@@ -1186,6 +1186,98 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'beats') {
+    // Beat cuts (v1.1.9): a 12 s clip whose soundtrack is a 120 BPM click track
+    // (grid 0.25 + 0.5k). Clicking the timeline's Detect beats button must put the
+    // grid on the project (BPM within ±1, every marker within one frame of a true
+    // beat, diamonds in the ruler); Split at beats with the playhead inside the clip
+    // must cut it into one piece per beat interval, as one undo step.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const clickWav = path.join(mediaDir, 'clicks.wav');
+      const track = path.join(mediaDir, 'track.mp4');
+      if (!fs.existsSync(track)) {
+        const SR = 16000;
+        const samples = new Float32Array(SR * 12);
+        const burst = (at, freq, amp, len = 0.03) => {
+          const start = Math.floor(at * SR);
+          const count = Math.floor(len * SR);
+          for (let i = 0; i < count; i++) {
+            const t = i / SR;
+            samples[start + i] += amp * Math.sin(2 * Math.PI * freq * t) * Math.exp(-t / (len / 4));
+          }
+        };
+        for (let t = 0.25; t < 12; t += 0.5) { burst(t, 1600, 0.9); burst(t, 140, 0.7, 0.08); }
+        const buf = Buffer.alloc(44 + samples.length * 2);
+        buf.write('RIFF', 0, 'latin1'); buf.writeUInt32LE(36 + samples.length * 2, 4);
+        buf.write('WAVE', 8, 'latin1'); buf.write('fmt ', 12, 'latin1');
+        buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+        buf.writeUInt32LE(SR, 24); buf.writeUInt32LE(SR * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+        buf.write('data', 36, 'latin1'); buf.writeUInt32LE(samples.length * 2, 40);
+        samples.forEach((v, i) => buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), 44 + i * 2));
+        fs.writeFileSync(clickWav, buf);
+        execFileSync(ff, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=12',
+          '-i', clickWav, '-shortest', '-pix_fmt', 'yuv420p', '-c:a', 'aac', track]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(track);
+      const p = {
+        id: 'beats119', name: 'Beats smoke', ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: track, name: 'track.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 12, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(500);
+      await q(`document.querySelector('button[aria-label^="Detect beats"]').click()`);
+      result.detected = await until(`!!(window.__fve.exportData().project.beats && window.__fve.exportData().project.beats.times.length)`, 90000);
+      result.jobNote = await q(`document.querySelector('.render-job')?.innerText || null`);
+      const proj = await q(`window.__fve.exportData().project`);
+      const grid = [];
+      for (let t = 0.25; t < 12; t += 0.5) grid.push(t);
+      if (proj.beats) {
+        result.bpm = proj.beats.bpm;
+        result.beatCount = proj.beats.times.length;
+        result.worstDevMs = Math.round(Math.max(...grid.map((g) => Math.min(...proj.beats.times.map((t) => Math.abs(t - g))))) * 1000);
+        result.gridHits = grid.filter((g) => proj.beats.times.some((t) => Math.abs(t - g) <= 1 / 30)).length;
+        result.gridTotal = grid.length;
+      }
+      result.ticks = await q(`document.querySelectorAll('.beat-tick').length`);
+      result.lines = await q(`document.querySelectorAll('.beat-line').length`);
+      await shot('bt-1-detected.png');
+      // Split at beats from inside the clip.
+      await q(`window.__fve.seek(6)`);
+      await wait(300);
+      result.splitEnabled = await q(`!document.querySelector('button[aria-label^="Split at beats"]').disabled`);
+      await q(`document.querySelector('button[aria-label^="Split at beats"]').click()`);
+      await wait(400);
+      const after = await q(`window.__fve.exportData().project`);
+      result.pieces = after.videoClips.length;
+      result.durationAfter = Math.round((await q(`window.__fve.duration()`)) * 1000) / 1000;
+      await shot('bt-2-split.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.piecesAfterUndo = (await q(`window.__fve.exportData().project`)).videoClips.length;
+      // Clear the grid from the toolbar.
+      await q(`document.querySelector('button[aria-label="Clear beat markers"]').click()`);
+      await wait(300);
+      result.beatsAfterClear = await q(`window.__fve.exportData().project.beats`);
+      result.ticksAfterClear = await q(`document.querySelectorAll('.beat-tick').length`);
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'subtitles') {
     // Subtitles panel + user caption templates + export progress (2026-11-05):
     // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap
