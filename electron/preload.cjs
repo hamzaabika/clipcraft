@@ -214,6 +214,32 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('matting:progress', handler);
     return () => ipcRenderer.removeListener('matting:progress', handler);
   },
+  // Auto-reframe: run(items) -> { results } | { canceled } | { error }; progress: { stage, fraction }.
+  reframeRun: (items) => ipcRenderer.invoke('reframe:run', items),
+  reframeCancel: () => ipcRenderer.invoke('reframe:cancel'),
+  onReframeProgress: (cb) => {
+    const handler = (_e, p) => cb(p);
+    ipcRenderer.on('reframe:progress', handler);
+    return () => ipcRenderer.removeListener('reframe:progress', handler);
+  },
+  // Beat cuts: analyze(project) -> { bpm, beats } | { canceled } | { error }; progress: { stage, fraction }.
+  beatsAnalyze: (project) => ipcRenderer.invoke('beats:analyze', project),
+  beatsCancel: () => ipcRenderer.invoke('beats:cancel'),
+  onBeatsProgress: (cb) => {
+    const handler = (_e, p) => cb(p);
+    ipcRenderer.on('beats:progress', handler);
+    return () => ipcRenderer.removeListener('beats:progress', handler);
+  },
+  // Save renderer-made text (subtitle export): ({ title, defaultName, content, filters }) -> { ok, path } | { canceled } | { error }.
+  saveTextFile: (payload) => ipcRenderer.invoke('file:saveText', payload),
+  // Caption translation: ({ texts, targetName }) -> { ok, texts, provider } | { canceled } | { error }; progress: { done, total }.
+  translateCaptions: (payload) => ipcRenderer.invoke('translate:captions', payload),
+  translateCancel: () => ipcRenderer.invoke('translate:cancel'),
+  onTranslateProgress: (cb) => {
+    const handler = (_e, p) => cb(p);
+    ipcRenderer.on('translate:progress', handler);
+    return () => ipcRenderer.removeListener('translate:progress', handler);
+  },
   aiTest: (draft) => ipcRenderer.invoke('ai:test', draft),
   aiModels: (draft) => ipcRenderer.invoke('ai:models', draft),
   captionsStatus: () => ipcRenderer.invoke('captions:status'),

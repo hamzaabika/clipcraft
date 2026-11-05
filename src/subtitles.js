@@ -56,6 +56,37 @@ export function srtSegments(input, makeId) {
   return parseSRT(input).map((s, i) => ({ ...s, id: makeId ? makeId(i) : `srt-${i}` }));
 }
 
+// --- Writing (v1.1.11): the serializer is the parser's inverse, so a file the
+// app exports re-imports to the same cues (millisecond rounding aside).
+
+// Seconds -> "00:01:02,500" (SubRip comma milliseconds, always 3 digits).
+export function formatSrtTime(t) {
+  const ms = Math.max(0, Math.round(Number(t || 0) * 1000));
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const r = ms % 1000;
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${p2(h)}:${p2(m)}:${p2(s)},${String(r).padStart(3, '0')}`;
+}
+
+// [{ start, end, text }] (or caption clips with start + duration) -> a complete
+// .srt file: numbered cues in start order, blank-text cues skipped, every cue
+// at least 1 ms long.
+export function toSRT(items) {
+  const cues = (items || [])
+    .map((c) => ({
+      start: Math.max(0, Number(c.start) || 0),
+      end: Math.max(0, c.end != null ? Number(c.end) : (Number(c.start) || 0) + (Number(c.duration) || 0)),
+      text: String(c.text || '').trim(),
+    }))
+    .filter((c) => c.text)
+    .sort((a, b) => a.start - b.start);
+  return cues
+    .map((c, i) => `${i + 1}\n${formatSrtTime(c.start)} --> ${formatSrtTime(Math.max(c.end, c.start + 0.001))}\n${c.text}`)
+    .join('\n\n') + (cues.length ? '\n' : '');
+}
+
 // Re-group caption segments so none carries more than `n` words: a longer segment is
 // split into consecutive chunks of at most n words, each chunk timed by its word share
 // of the original span (chunk i covers words [i, i+n) of the segment's [start, end]).

@@ -779,6 +779,11 @@ kbd {
 }
 .marker:hover { color: #fde68a; transform: scale(1.15); }
 .marker-line { position: absolute; top: 26px; bottom: 0; width: 1px; background: rgba(251, 191, 36, 0.45); z-index: 3; pointer-events: none; }
+/* Beat cuts: the detected grid — a violet diamond low in the ruler per beat, a faint
+   line down the tracks, and the tempo chip in the timeline toolbar. */
+.beat-tick { position: absolute; top: 17px; width: 7px; height: 7px; margin-left: -3.5px; background: var(--accent); transform: rotate(45deg); border-radius: 1px; z-index: 2; pointer-events: none; }
+.beat-line { position: absolute; top: 26px; bottom: 0; width: 1px; background: rgba(139, 92, 246, 0.14); z-index: 1; pointer-events: none; }
+.beat-bpm { font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 2px; }
 .razor-line { position: absolute; top: 0; bottom: 0; width: 1px; background: #fff; box-shadow: 0 0 6px var(--primary); z-index: 7; pointer-events: none; }
 .razor-time { position: absolute; top: 4px; transform: translateX(6px); z-index: 8; pointer-events: none; background: var(--surface-3, #23233a); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 1px 6px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .tl-scroll.razor, .tl-scroll.razor .clip, .tl-scroll.razor .clip .handle { cursor: crosshair; }
@@ -2434,8 +2439,16 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .tx-cut-sentence:hover { color: var(--danger, #f87171); }
 .tx-actions { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .tx-silences { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.tx-chapters { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .tx-sil-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
 .tx-sil-row { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; padding: 3px 6px; background: var(--surface-3); border-radius: var(--r-sm); }
+/* Retake assistant (v1.1.7): repeated-line groups in the transcript. */
+.tx-retake { border-left: 2px solid var(--border); padding-left: 8px; }
+.tx-retake-keep { border-left-color: var(--primary); }
+.tx-take-badge { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; vertical-align: middle; white-space: nowrap; }
+.tx-retake-keep .tx-take-badge { color: var(--primary); border-color: var(--primary); }
+.tx-retakes { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.tx-retake-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
 /* Export encoding view: live processed-time readout next to the stage. */
 .x-enc-time { margin-left: auto; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .x-enc-pct { margin-left: 0; }

@@ -35,6 +35,7 @@ export function emptyProject() {
     // toggling a lock must never be an undoable document edit (industry standard).
     layerState: {},
     markers: [], // [{ id, time, label }] timeline flags
+    beats: null, // { bpm, times: [seconds] } — the soundtrack's beat grid (Beat cuts); snapping uses it too
     snapping: true, // drags snap to clip edges, the playhead and markers
   };
 }
@@ -52,6 +53,7 @@ export function normalizeProject(p) {
     effectClips: p.effectClips || [],
     magnet: { ...base.magnet, ...(p.magnet || {}) },
     markers: p.markers || [],
+    beats: p.beats && Array.isArray(p.beats.times) && p.beats.times.length ? { bpm: p.beats.bpm || 0, times: p.beats.times } : null,
     snapping: p.snapping ?? true,
   };
 }
@@ -507,6 +509,25 @@ function reduceProjectInner(p, a) {
       }));
       return { ...p, textClips: [...p.textClips, ...caps] };
     }
+    case 'addTranslatedCaptions': {
+      // Caption translation (v1.1.10): the translated lines land on their own
+      // new text layer with the source captions' exact timings and styles —
+      // the originals are untouched, and the whole layer is one undo step.
+      const layer = Math.max(0, Math.floor(a.layer) || 0);
+      const caps = (a.segments || []).map((s) => ({
+        ...(s.style || {}),
+        id: s.id,
+        text: s.text,
+        start: s.start,
+        duration: Math.max(0.2, s.duration),
+        caption: true,
+        source: 'translation',
+        lang: a.lang || '',
+        layer,
+      }));
+      if (!caps.length) return p;
+      return { ...p, textClips: [...p.textClips, ...caps] };
+    }
     case 'removeSrtCaptions':
       return { ...p, textClips: p.textClips.filter((c) => c.source !== 'srt') };
     case 'styleSrtCaptions':
@@ -587,8 +608,28 @@ function reduceProjectInner(p, a) {
       return cutRanges(p, a.ranges, { rippleText: !!a.rippleText });
     case 'addMarker':
       return { ...p, markers: [...p.markers, { id: a.id, time: Math.max(0, a.time), label: a.label || '' }].sort((x, y) => x.time - y.time) };
+    case 'addMarkers': {
+      // Bulk add (auto chapters, v1.1.11): the whole batch is one undo step.
+      // A marker within half a second of an existing one (or of another in
+      // the batch) is skipped — chapters never stack duplicates on re-runs.
+      const kept = [];
+      const taken = (p.markers || []).map((m) => m.time);
+      for (const m of a.markers || []) {
+        const t = Math.max(0, Number(m.time) || 0);
+        if (taken.some((x) => Math.abs(x - t) < 0.5)) continue;
+        taken.push(t);
+        kept.push({ id: m.id, time: t, label: m.label || '' });
+      }
+      if (!kept.length) return p;
+      return { ...p, markers: [...p.markers, ...kept].sort((x, y) => x.time - y.time) };
+    }
     case 'removeMarker':
       return { ...p, markers: p.markers.filter((m) => m.id !== a.id) };
+    case 'setBeats':
+      // The soundtrack's beat grid (Beat cuts): { bpm, times } or null to clear it.
+      return { ...p, beats: a.beats && Array.isArray(a.beats.times) && a.beats.times.length ? { bpm: a.beats.bpm || 0, times: [...a.beats.times].sort((x, y) => x - y) } : null };
+    case 'splitAtBeats':
+      return splitClipAtBeats(p, a.id, a.newIds || []);
     default:
       return p;
   }
@@ -896,6 +937,35 @@ function splitLinked(p, track, id, t, newId) {
   return res;
 }
 
+// Splits ONE main-track clip at every beat of the project's beat grid inside it
+// (Beat cuts, v1.1.9): the cuts walk the grid in time order, each one splitting the
+// piece that currently carries the rest of the clip, through the same linked split
+// a manual cut uses — a detached-audio partner is cut at the same moments and the
+// link invariants hold for every pair. Beats too close to an edge (or to the
+// previous cut) leave no sliver: splitAt itself refuses them, and the walk simply
+// moves on. One reduction, so the whole beat cut is one undo step. newIds supplies
+// one fresh id per potential cut; extras are ignored.
+export function splitClipAtBeats(p, id, newIds) {
+  const times = p.beats && Array.isArray(p.beats.times) ? p.beats.times : [];
+  if (!times.length) return p;
+  const l0 = videoLayout(p.videoClips).find((x) => x.clip.id === id);
+  if (!l0 || l0.clip.gap) return p;
+  const inside = times.filter((t) => t > l0.start && t < l0.end).sort((a, b) => a - b);
+  let out = p;
+  let carrier = id;
+  let n = 0;
+  for (const t of inside) {
+    if (n >= newIds.length) break;
+    const next = splitLinked(out, 'video', carrier, t, newIds[n]);
+    if (next !== out) {
+      out = next;
+      carrier = newIds[n];
+      n++;
+    }
+  }
+  return out;
+}
+
 const CLIP_LISTS = { video: 'videoClips', overlay: 'overlayClips', text: 'textClips', audio: 'audioClips', effect: 'effectClips' };
 export function findClipIn(p, track, id) {
   const key = CLIP_LISTS[track];
@@ -946,6 +1016,7 @@ function actionLocked(p, a) {
     case 'delete':
     case 'duplicate':
     case 'split': return clipLocked(p, a.track, clipOf(a.track, a.id));
+    case 'splitAtBeats': return clipLocked(p, 'video', clipOf('video', a.id));
     case 'trimClip': return clipLocked(p, a.track, clipOf(a.track, a.id));
     case 'paste': {
       if (a.track === 'video') return isLayerLocked(p, 'video', 0);
@@ -964,6 +1035,7 @@ function actionLocked(p, a) {
     case 'deleteLayer': return a.track !== 'video' && isLayerLocked(p, a.track, a.layer);
     case 'setCaptions':
     case 'importSrtCaptions': return isLayerLocked(p, 'text', 0);
+    case 'addTranslatedCaptions': return isLayerLocked(p, 'text', Math.max(0, Math.floor(a.layer) || 0));
     case 'addEffectClip': return isLayerLocked(p, 'effect', 0);
     case 'insertAudioClip': return isLayerLocked(p, 'audio', layerOf(a.clip || {}));
     case 'addToTimeline': {

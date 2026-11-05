@@ -4,6 +4,8 @@ import { LAYERED, canvasFor, clipLayer, emptyProject, findClipIn, findLinkPartne
 import HomeScreen from './components/HomeScreen.jsx';
 import SequenceDialog from './components/SequenceDialog.jsx';
 import { mismatchFor, sequencePatchFor } from './sequence.js';
+import { buildVerticalCopy } from './reframe.js';
+import { beatSplitTarget } from './beats.js';
 import { sizeFor } from './effects.js';
 import ContextMenu from './components/ContextMenu.jsx';
 import {
@@ -1133,6 +1135,70 @@ export default function App() {
     } else if (res && res.canceled) setRenderJob(null);
     else setRenderJob({ error: (res && res.error) || 'Tracking failed.' });
   };
+
+  // Auto-reframe 9:16 (v1.1.8): track the faces on the main track, then switch to a NEW vertical
+  // copy of the project whose pictures follow the subject (src/reframe.js). The original keeps
+  // its file and autosave slot untouched — the copy starts unbound, like a new project.
+  const startReframe = async () => {
+    const p = projectRef.current;
+    if (p.ratio === '9:16') { setRenderJob({ error: 'This project is already vertical (9:16).' }); return; }
+    const items = [];
+    for (const c of p.videoClips) {
+      if (c.gap) continue;
+      const m = p.media.find((x) => x.id === c.mediaId);
+      if (m && m.type === 'video' && m.path) {
+        items.push({ clipId: c.id, item: { path: m.path, width: m.width, height: m.height, duration: m.duration, fps: m.fps, hdr: m.hdr }, from: c.in || 0, to: c.out ?? m.duration });
+      }
+    }
+    const hasPicture = p.videoClips.some((c) => !c.gap && p.media.some((x) => x.id === c.mediaId));
+    if (!hasPicture) { setRenderJob({ error: 'Add a video clip to the main track first — auto-reframe follows the subject in it.' }); return; }
+    setRenderJob({ kind: 'reframe', label: items.length ? 'Tracking faces…' : 'Making the vertical copy…', fraction: 0 });
+    let res = { results: {} };
+    if (items.length) {
+      const off = window.api.onReframeProgress(({ stage, fraction }) => setRenderJob((j) => (j && j.kind === 'reframe'
+        ? { ...j, label: stage === 'download' ? 'Downloading the face model…' : 'Tracking faces…', fraction } : j)));
+      try { res = await window.api.reframeRun(items); } catch { res = null; }
+      off();
+    }
+    if (!res || res.error) { setRenderJob({ error: (res && res.error) || 'Auto-reframe failed.' }); return; }
+    if (res.canceled) { setRenderJob(null); return; }
+    const paths = {};
+    for (const [clipId, r] of Object.entries(res.results || {})) paths[clipId] = r.points;
+    const copy = buildVerticalCopy(projectRef.current, paths, uid);
+    await flushAutosave(); // the original keeps its last changes (file + slot)
+    autosave.current.file = null;
+    autosave.current.pendingRestore = false;
+    dispatch({ type: 'load', project: copy });
+    setSaveState('new');
+    setUnsavedNote(null);
+    setTime(0);
+    setSelection(null);
+    setRenderJob(null);
+  };
+  // Beat cuts (v1.1.9): hear the soundtrack's beat grid (electron/beats.cjs) and put
+  // it on the project; the timeline draws the beat markers, snapping includes them,
+  // and Split at beats cuts a main-track clip on them (src/beats.js + store).
+  const startBeatDetect = async () => {
+    const p = projectRef.current;
+    const hasSound = p.media.some((m) => m.hasAudio) && (p.videoClips.length || p.audioClips.length);
+    if (!hasSound) { setRenderJob({ error: 'Add a clip with sound to the timeline first — the beats are heard in its soundtrack.' }); return; }
+    setRenderJob({ kind: 'beats', label: 'Listening for beats…', fraction: 0 });
+    const off = window.api.onBeatsProgress(({ stage, fraction }) => setRenderJob((j) => (j && j.kind === 'beats'
+      ? { ...j, label: stage === 'render' ? 'Mixing the soundtrack…' : 'Listening for beats…', fraction } : j)));
+    let res = null;
+    try { res = await window.api.beatsAnalyze(p); } catch { res = null; }
+    off();
+    if (!res || res.error) { setRenderJob({ error: (res && res.error) || 'Beat detection failed.' }); return; }
+    if (res.canceled) { setRenderJob(null); return; }
+    dispatch({ type: 'setBeats', beats: { bpm: res.bpm, times: res.beats } });
+    setRenderJob(null);
+  };
+  const splitAtBeats = useCallback(() => {
+    const tgt = beatSplitTarget(project, time, selection);
+    if (!tgt) return;
+    dispatch({ type: 'splitAtBeats', id: tgt.clip.id, newIds: tgt.times.map(() => uid()) });
+  }, [project, time, selection]);
+
   const menuItems = (sel) => {
     if (sel.track === 'effect' && !sel.id.includes('|')) {
       return [
@@ -1799,7 +1865,7 @@ export default function App() {
       onDragOver={(e) => { e.preventDefault(); if (isFiles(e) && !isInternal(e)) setDragOver(true); }}
       onDragLeave={(e) => { if (e.target === e.currentTarget) setDragOver(false); }}
       onDrop={onDrop}>
-      <TopBar project={project} dispatch={dispatch} onOpen={open} onSave={save} saveState={saveState} onExport={startExport} onExportAudio={(f) => exportAudio(f)} onSettings={() => setSettingsOpen(true)}
+      <TopBar project={project} dispatch={dispatch} onOpen={open} onSave={save} saveState={saveState} onExport={startExport} onExportAudio={(f) => exportAudio(f)} onReframe={startReframe} onSettings={() => setSettingsOpen(true)}
         onHome={async () => { await flushAutosave(); refreshSlots(); setScreen('home'); }}
         onAbout={() => setAboutOpen(true)} updateReady={!!update?.newer} />
 
@@ -1841,6 +1907,7 @@ export default function App() {
         onDetach={() => detachAudio()} detachOk={detachOk} linkMode={linkMode}
         onLinkToggle={() => (linkMode === 'unlink' ? unlinkClip() : linkPair())}
         onSplit={split} onDelete={remove} onDuplicate={duplicate}
+        onDetectBeats={startBeatDetect} onSplitBeats={splitAtBeats}
         tool={tool} setTool={setTool} onTrimSide={trimSide} onMarker={toggleMarker} recorder={recorder} onToggleRecord={toggleRecording}
         onDropItem={dropItem} onDropFiles={dropFiles} canUndo={!!state.past.length} canRedo={!!state.future.length} onClipMenu={openClipMenu} onAddText={addText}
         overlay={slots.length > 0 && <SlotStrip slots={slots} media={project.media} selection={selection} onPick={pickSlot} onReplace={replaceSlot} title={project.template?.title} />} />
@@ -1902,7 +1969,7 @@ export default function App() {
           ) : (
             <><Loader2 size={15} className="spin" /><span>{renderJob.label}</span>
               <div className="progress render-job-bar"><div style={{ width: `${Math.round((renderJob.fraction || 0) * 100)}%` }} /></div>
-              <button className="btn btn-sm btn-ghost" onClick={() => (renderJob.kind === 'detach' ? window.api.detachCancel() : renderJob.kind === 'enhance' ? window.api.enhanceCancel() : renderJob.kind === 'track' ? window.api.trackCancel() : window.api.reverseCancel())}>Cancel</button></>
+              <button className="btn btn-sm btn-ghost" onClick={() => (renderJob.kind === 'detach' ? window.api.detachCancel() : renderJob.kind === 'enhance' ? window.api.enhanceCancel() : renderJob.kind === 'track' ? window.api.trackCancel() : renderJob.kind === 'reframe' ? window.api.reframeCancel() : renderJob.kind === 'beats' ? window.api.beatsCancel() : window.api.reverseCancel())}>Cancel</button></>
           )}
         </div>
       )}

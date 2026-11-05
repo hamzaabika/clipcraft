@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AudioLines, Check, ChevronDown, CircleAlert, Coffee, Download, Film, FolderOpen, Home, Info, Instagram, Save, Settings } from 'lucide-react';
+import { AudioLines, Check, ChevronDown, CircleAlert, Coffee, Download, Film, FolderOpen, Home, Info, Instagram, Save, Settings, Smartphone } from 'lucide-react';
 import ContextMenu from './ContextMenu.jsx';
 import { RATIOS, sizeFor } from '../effects.js';
 import { SUPPORT_URL } from './HomeScreen.jsx';
@@ -13,7 +13,7 @@ const SAVE_STATES = {
   error: ['Not saved', 'The project file could not be written. Click Save to choose another place'],
 };
 
-export default function TopBar({ project, dispatch, onOpen, onSave, saveState = 'new', onExport, onExportAudio, onSettings, onAbout, onHome, updateReady = false }) {
+export default function TopBar({ project, dispatch, onOpen, onSave, saveState = 'new', onExport, onExportAudio, onReframe, onSettings, onAbout, onHome, updateReady = false }) {
   const [menu, setMenu] = useState(null);
   const set = (patch) => dispatch({ type: 'setProject', patch, transient: true });
   return (
@@ -50,6 +50,10 @@ export default function TopBar({ project, dispatch, onOpen, onSave, saveState = 
         <button className="btn btn-ghost support-btn" onClick={() => window.api.openHelp(SUPPORT_URL)} aria-label="Support ClipCraft on PayPal"
           title="Support ClipCraft's development on PayPal">
           <img src="./paypal.svg" alt="" className="paypal-mark" draggable={false} /> <span className="support-word-full">Support the project</span><span className="support-word-short">Support</span>
+        </button>
+        <button className="btn btn-ghost" onClick={onReframe} aria-label="Make vertical copy"
+          title="Auto-reframe: make a vertical 9:16 copy of this project that follows the subject (faces are tracked on this PC). This project stays untouched.">
+          <Smartphone size={15} /> <span className="top-word">Vertical</span>
         </button>
         <div className="export-split">
           <button className="btn btn-export" onClick={onExport}><Download size={15} /> Export</button>

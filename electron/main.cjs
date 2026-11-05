@@ -1167,6 +1167,123 @@ ipcMain.handle('matting:run', async (_e, item) => {
 });
 ipcMain.handle('matting:cancel', () => { if (mattingJob) mattingJob.canceled = true; });
 
+// Auto-reframe 9:16: face tracking over the main track's ranges (electron/reframe.cjs), one job at a
+// time. The renderer sends one item per video clip; progress goes to the interface as reframe:progress
+// (fraction of the whole job). The result is a face-centre path per clip; src/reframe.js builds the
+// vertical project copy from the paths.
+const reframe = require('./reframe.cjs');
+const reframeDir = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'reframe-test') : path.join(app.getPath('userData'), 'reframe'));
+const reframeCache = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'reframe-cache-test') : path.join(app.getPath('userData'), 'reframe-cache'));
+let reframeJob = null; // { canceled }
+ipcMain.handle('reframe:run', async (_e, items) => {
+  if (reframeJob) return { error: 'Another video is being processed. Wait for it to finish.' };
+  const list = (items || []).filter((x) => x && x.item && x.item.path && fs.existsSync(x.item.path));
+  if (!list.length) return { error: 'The video files were not found.' };
+  const job = { canceled: false };
+  reframeJob = job;
+  const send = (stage, fraction) => { if (win && !win.isDestroyed()) win.webContents.send('reframe:progress', { stage, fraction }); };
+  try {
+    if (!reframe.status(reframeDir()).installed) {
+      send('download', 0);
+      await reframe.install(reframeDir(), (f) => send('download', f), net.fetch);
+    }
+    const { ffmpegPath, toSdr } = require('./ffmpeg.cjs');
+    const results = {};
+    for (let i = 0; i < list.length; i++) {
+      const { clipId, item, from, to } = list[i];
+      send('faces', i / list.length);
+      results[clipId] = await reframe.analyze(item, {
+        dir: reframeDir(), cacheDir: reframeCache(), ffmpegPath, toSdr, from, to,
+        onProgress: (f) => send('faces', (i + f) / list.length), isCanceled: () => job.canceled,
+      });
+    }
+    send('faces', 1);
+    return { results };
+  } catch (e) {
+    return e.canceled ? { canceled: true } : { error: e.message };
+  } finally {
+    reframeJob = null;
+  }
+});
+ipcMain.handle('reframe:cancel', () => { if (reframeJob) reframeJob.canceled = true; });
+
+// Beat cuts: analyse the project soundtrack's beat grid (electron/beats.cjs), one job
+// at a time. Progress goes to the interface as beats:progress (stage + fraction of the
+// whole job); the renderer stores the result on the project (src/beats.js reads it).
+const beats = require('./beats.cjs');
+const beatsCache = () => (process.env.FVE_SMOKE ? path.join(process.env.FVE_SMOKE, 'beats-cache-test') : path.join(app.getPath('userData'), 'beats-cache'));
+let beatsJob = null; // { canceled }
+ipcMain.handle('beats:analyze', async (_e, project) => {
+  if (beatsJob) return { error: 'Another video is being processed. Wait for it to finish.' };
+  const job = { canceled: false };
+  beatsJob = job;
+  const send = (stage, fraction) => { if (win && !win.isDestroyed()) win.webContents.send('beats:progress', { stage, fraction }); };
+  try {
+    send('render', 0);
+    const r = await beats.analyzeProject(project, {
+      cacheDir: beatsCache(),
+      onProgress: (stage, f) => send(stage, f),
+      isCanceled: () => job.canceled,
+    });
+    send('analyze', 1);
+    return { bpm: r.bpm, beats: r.beats, cached: !!r.cached };
+  } catch (e) {
+    return e.canceled ? { canceled: true } : { error: e.message };
+  } finally {
+    beatsJob = null;
+  }
+});
+ipcMain.handle('beats:cancel', () => { if (beatsJob) beatsJob.canceled = true; });
+
+// Save a text file the renderer produced (subtitle export, v1.1.11): the
+// dialog and the write live here; the renderer supplies only text + a name.
+ipcMain.handle('file:saveText', async (_e, { title, defaultName, content, filters } = {}) => {
+  try {
+    const name = String(defaultName || 'file.txt').replace(/[\\/:*?"<>|]+/g, '').trim() || 'file.txt';
+    const res = await dialog.showSaveDialog(win, {
+      title: title || 'Save file',
+      defaultPath: name,
+      filters: filters && filters.length ? filters : [{ name: 'Text', extensions: ['txt'] }],
+    });
+    if (res.canceled || !res.filePath) return { canceled: true };
+    fs.writeFileSync(res.filePath, String(content ?? ''), 'utf8');
+    return { ok: true, path: res.filePath };
+  } catch (e) {
+    return { error: `Could not save the file: ${e.message}` };
+  }
+});
+
+// ---- Caption translation (v1.1.10): the user's AI provider translates the
+// caption lines; timings never leave the renderer. One job at a time. ----
+const translate = require('./translate.cjs');
+let translateJob = null; // { canceled }
+ipcMain.handle('translate:captions', async (_e, { texts, targetName } = {}) => {
+  if (translateJob) return { error: 'A translation is already running. Wait for it to finish.' };
+  if (!Array.isArray(texts) || !texts.length) return { error: 'There are no captions to translate.' };
+  if (!targetName) return { error: 'Pick a target language first.' };
+  const job = { canceled: false };
+  translateJob = job;
+  const send = (done, total) => { if (win && !win.isDestroyed()) win.webContents.send('translate:progress', { done, total }); };
+  try {
+    const fb = require('./aifallback.cjs');
+    const active = settings.getActive();
+    const keys = settings.getPublic().keys || {};
+    const order = fb.fallbackOrder(active.provider, (p) => p === 'ollama' || !!keys[p]);
+    const { result, provider, failed } = await fb.withFallback(order, (p) => settings.getActive(p), (cfg) =>
+      translate.translateTexts(texts, targetName, (system, user) => ai.chat(cfg, { system, messages: [{ role: 'user', content: user }], maxTokens: 4096, timeoutMs: 120000 }), {
+        onProgress: send,
+        isCancelled: () => job.canceled,
+      }));
+    if (job.canceled) return { canceled: true };
+    return { ok: true, texts: result, provider, fellBack: failed.map((f) => f.provider) };
+  } catch (e) {
+    return job.canceled || /cancelled/i.test(e.message || '') ? { canceled: true } : { error: e.message };
+  } finally {
+    translateJob = null;
+  }
+});
+ipcMain.handle('translate:cancel', () => { if (translateJob) translateJob.canceled = true; });
+
 // Background pictures for scenes without footage (CraftAI's add_scene), kept with the library downloads.
 ipcMain.handle('scene:make', async (_e, opts) => {
   try {

@@ -1,10 +1,11 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
-  ArrowLeftRight, ArrowLeftToLine, ArrowRightToLine, AudioLines, Copy, CopyPlus, Eye, EyeOff, Film, Flag, GripVertical, Layers, Link2, Lock, LockOpen, Magnet, Mic, MoreHorizontal, MousePointer2, Music, Pencil, Plus, Scissors, Slice,
-  Sparkles, Square, StretchHorizontal, Target, Trash2, Type, Undo2, Unlink, Volume2, VolumeX, Redo2, X, ZoomIn, ZoomOut, Captions,
+  ArrowLeftRight, ArrowLeftToLine, ArrowRightToLine, AudioLines, AudioWaveform, Copy, CopyPlus, Eye, EyeOff, Film, Flag, GripVertical, Layers, Link2, Lock, LockOpen, Magnet, Mic, MoreHorizontal, MousePointer2, Music, Pencil, Plus, Scissors, Slice,
+  Sparkles, Split, Square, StretchHorizontal, Target, Trash2, Type, Undo2, Unlink, Volume2, VolumeX, Redo2, X, ZoomIn, ZoomOut, Captions,
 } from 'lucide-react';
 import { LAYERED, MIN_CLIP, clipLayer, effectObjects, formatTime, freeLen, isLayerLocked, layerCount, layerFree, layerName, layerOf, layerStateOf, toFileUrl, trimActions, uid, videoClipAt, videoLayout } from '../store.js';
 import { animById, animOf, keyTimes, moveKeys } from '../anim.js';
+import { beatSplitTarget, beatsOf, formatBpm } from '../beats.js';
 import { filterName } from '../fx/filters.js';
 import { EFFECTS, TRANSITIONS } from '../effects.js';
 import { FILTERS, clipCss } from '../effects.js';
@@ -49,7 +50,7 @@ const LANES = [
 export default function Timeline({
   project, time, duration, selection, onSelect, onSeek, dispatch, onSplit, onDelete, onDuplicate,
   onDropItem, onDropFiles, canUndo, canRedo, tool, setTool, onTrimSide, onMarker, recorder, onToggleRecord, onClipMenu, overlay, onAddText, clockRef, playing,
-  onDetach, detachOk, onLinkToggle, linkMode,
+  onDetach, detachOk, onLinkToggle, linkMode, onDetectBeats, onSplitBeats,
 }) {
   const [pps, setPps] = useState(60); // pixels per second (zoom)
   const [drop, setDrop] = useState(null); // { lane, time, index, clipId }
@@ -202,6 +203,7 @@ export default function Timeline({
       onBlur={() => { dispatch({ type: 'renameLayer', track, layer, name: renaming.draft }); setRenaming(null); }} />
   );
   const markers = project.markers || [];
+  const beats = beatsOf(project);
   const magnet = project.magnet || {};
   const scrollRef = useRef(null);
   const mediaById = Object.fromEntries(project.media.map((m) => [m.id, m]));
@@ -307,9 +309,11 @@ export default function Timeline({
     });
   };
 
-  // Snapping: pull a dragged clip's start or end (or a razor cut) to a nearby edge: other clips, markers, the playhead, zero.
+  // Snapping: pull a dragged clip's start or end (or a razor cut) to a nearby edge: other clips, markers,
+  // beat markers (when a beat grid is on the project), the playhead, zero. Every caller gates on
+  // project.snapping, so the beats join snapping exactly while the toggle is on.
   const edgeTimes = (excludeId) => {
-    const edges = [0, time, ...markers.map((m) => m.time)];
+    const edges = [0, time, ...markers.map((m) => m.time), ...beats];
     layout.forEach((l) => edges.push(l.start, l.end));
     project.audioClips.forEach((c) => c.id !== excludeId && edges.push(c.start, c.start + freeLen('audio', c)));
     project.textClips.forEach((c) => c.id !== excludeId && edges.push(c.start, c.start + c.duration));
@@ -662,6 +666,13 @@ export default function Timeline({
     </button>
   ));
 
+  // Beat markers: a small violet diamond low in the ruler per beat of the grid —
+  // visual only (not buttons): clicking the ruler still scrubs, and the grid is
+  // cleared from the toolbar, not beat by beat.
+  const beatEls = beats.map((t, i) => (
+    <div key={`beat-${i}`} className="beat-tick" style={{ left: t * pps }} title={`Beat ${formatTime(t)}`} />
+  ));
+
   // Ruler ticks: pick a step that keeps labels ~90px apart.
   const step = [0.5, 1, 2, 5, 10, 15, 30, 60].find((s) => s * pps >= 90) || 120;
   const ticks = [];
@@ -828,6 +839,9 @@ export default function Timeline({
   if (underPlayhead && !(selection && selection.id === underPlayhead.clip.id)) trimTargets.push({ track: 'video', id: underPlayhead.clip.id });
   const canTrim = (side) => trimTargets.some((tgt) => trimActions(project, { track: tgt.track, id: tgt.id, t: time, side, newId: tgt.id }).length > 0);
   const canSplit = !!(selection || underPlayhead);
+  // Beat cuts: the clip Split at beats would cut (selection first, then the clip
+  // under the playhead — the same targeting as the split button), or null.
+  const beatTarget = beats.length ? beatSplitTarget(project, time, selection) : null;
 
   return (
     <section className="timeline" aria-label="Timeline">
@@ -859,6 +873,16 @@ export default function Timeline({
           )}
           <div className="tool-cluster" role="group" aria-label="Mark">
             <IconBtn label="Marker at playhead (M). Press again on a marker to remove it" onClick={onMarker}><Flag size={16} /></IconBtn>
+          </div>
+          <div className="tool-cluster" role="group" aria-label="Beats">
+            <IconBtn label={beats.length ? `Beat markers on the ruler (${formatBpm(project.beats.bpm)}) — detect again` : 'Detect beats: listen to the soundtrack and mark its beats on the ruler'}
+              active={beats.length > 0} onClick={onDetectBeats}><AudioWaveform size={16} /></IconBtn>
+            {beats.length > 0 && <span className="beat-bpm" title={`Detected tempo: ${formatBpm(project.beats.bpm)} · ${beats.length} beats`}>{formatBpm(project.beats.bpm)}</span>}
+            <IconBtn label={beatTarget ? `Split at beats: cut this clip on all ${beatTarget.times.length} beats inside it` : 'Split at beats: detect beats first, then put the playhead in a main-track clip'}
+              onClick={onSplitBeats} disabled={!beatTarget}><Split size={16} /></IconBtn>
+            {beats.length > 0 && (
+              <IconBtn label="Clear beat markers" onClick={() => dispatch({ type: 'setBeats', beats: null })}><X size={16} /></IconBtn>
+            )}
           </div>
         </div>
         <div className="tool-group">
@@ -903,6 +927,7 @@ export default function Timeline({
             <div className="tl-head" />
             <div className="tl-ruler">
               {markerEls}
+              {beatEls}
               {ticks.map((t) => (
                 <div key={t} className="tick" style={{ left: t * pps }}><span>{formatTime(t).slice(0, 5)}</span></div>
               ))}
@@ -958,6 +983,7 @@ export default function Timeline({
           })}
 
           {markers.map((m) => <div key={m.id} className="marker-line" style={{ left: HEADER + m.time * pps }} />)}
+          {beats.map((t, i) => <div key={`beatline-${i}`} className="beat-line" style={{ left: HEADER + t * pps }} />)}
           {tool === 'razor' && razorAt != null && <div className="razor-line" style={{ left: HEADER + razorAt * pps }} />}
           {tool === 'razor' && razorAt != null && <div className="razor-time" style={{ left: HEADER + razorAt * pps }}>{formatTime(razorAt)}</div>}
           {snapAt != null && <div className="snap-line" style={{ left: HEADER + snapAt * pps }} />}

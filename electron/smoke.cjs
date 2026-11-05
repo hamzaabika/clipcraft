@@ -1008,6 +1008,430 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'retakes') {
+    // Retake assistant (v1.1.7): captions with two repeated-line groups are
+    // injected through setCaptions; the Transcript panel must badge the
+    // takes, suggest the last complete one, and its Keep button must cut
+    // exactly the other attempts (measured durations), undo restoring all.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'talk20.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=20',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=20:sample_rate=44100', '-shortest', '-pix_fmt', 'yuv420p', '-c:a', 'aac', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const p = {
+        name: 'Retakes smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'talk20.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 20, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      const dur = () => q(`window.__fve.exportData().project.videoClips.reduce((n, c) => n + (c.out - c.in) / (c.speed || 1), 0)`);
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      const seg = (id, start, end, text) => {
+        const parts = text.split(' ');
+        return { id, start, end, text, words: parts.map((t, i) => ({ text: t, start: start + ((end - start) * i) / parts.length, end: start + ((end - start) * (i + 1)) / parts.length })) };
+      };
+      const segments = [
+        seg('rk1', 1, 3, 'welcome back to'),
+        seg('rk2', 4, 7, 'welcome back to the show everyone'),
+        seg('rk3', 9, 12, 'today we test three laptops'),
+        seg('rk4', 13, 16, 'today we test three laptops'),
+        seg('rk5', 17, 18.5, 'today we test'),
+        seg('rk6', 19, 20, 'thanks for watching'),
+      ];
+      await q(`window.__fve.dispatch({ type: 'setCaptions', style: { template: 'cap-classic' }, segments: ${JSON.stringify(segments)} })`);
+      await wait(300);
+      await q(`window.__fve.tab('captions')`);
+      result.at = 'panel';
+      result.badges = await until(`document.querySelectorAll('.tx-take-badge').length === 5`, 10000)
+        ? await q(`document.querySelectorAll('.tx-take-badge').length`) : 0;
+      result.badgeText = await q(`[...document.querySelectorAll('.tx-take-badge')].map((b) => b.textContent.trim())`);
+      result.keepButtons = await q(`[...document.querySelectorAll('.tx-retake-row button')].map((b) => b.textContent.trim())`);
+      result.before = await dur();
+      await shot('rk-1-groups.png');
+      // Keep group 2's suggested take (sentence 4): cuts rk3 (3 s) + rk5 (1.5 s).
+      await q(`document.querySelectorAll('.tx-retake-row button')[1].click()`);
+      await wait(400);
+      result.afterKeepGroup2 = await dur();
+      result.keptCaption = await q(`window.__fve.exportData().project.textClips.some((c) => c.id === 'rk4')`);
+      result.cutCaptionsGone = await q(`window.__fve.exportData().project.textClips.filter((c) => c.caption).map((c) => c.id)`);
+      await shot('rk-2-kept.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.afterUndo = await dur();
+      // Keep group 1's suggested take (sentence 2): cuts rk1 (2 s).
+      await q(`document.querySelectorAll('.tx-retake-row button')[0].click()`);
+      await wait(400);
+      result.afterKeepGroup1 = await dur();
+      await shot('rk-3-kept1.png');
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'reframe') {
+    // Auto-reframe 9:16 (v1.1.8): a real portrait sits in a wide scene; the video window pans
+    // across it, so the face crosses the frame (fractions 0.560 -> 0.326 over 6 s). Clicking
+    // the TopBar's Vertical button must track it and switch to a NEW 9:16 project copy whose
+    // clip is cover-scaled with x keyframes following the face; the export is then re-analysed
+    // with the same detector: the face must sit at the export's centre.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync, spawn } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const photo = path.join(mediaDir, 'portrait.jpg');
+      const talk = path.join(mediaDir, 'talk.mp4');
+      if (!fs.existsSync(talk)) {
+        if (!fs.existsSync(photo)) {
+          // Node's https (system CA store), not Chromium's net stack — the sandbox's TLS
+          // proxy is only in the system store.
+          const buf = await new Promise((resolve, reject) => {
+            const get = (url) => require('https').get(url, (r) => {
+              if (r.statusCode >= 300 && r.statusCode < 400) return get(r.headers.location);
+              if (r.statusCode !== 200) return reject(new Error(`portrait download: HTTP ${r.statusCode}`));
+              const chunks = [];
+              r.on('data', (c) => chunks.push(c));
+              r.on('end', () => resolve(Buffer.concat(chunks)));
+            }).on('error', reject);
+            get('https://upload.wikimedia.org/wikipedia/commons/8/8d/President_Barack_Obama.jpg');
+          });
+          fs.writeFileSync(photo, buf);
+        }
+        // Scene: the portrait's head-and-shoulders (top 55%; face centre at (0.493, 0.364) of
+        // it, measured with the detector) scaled to 720 tall (1048 wide) at x=200 of a
+        // 2560x720 black canvas. Frames are windowed from the scene in-process (this ffmpeg
+        // build does not evaluate crop/drawbox expressions): window x = 50t.
+        const scene = path.join(mediaDir, 'scene.png');
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-i', photo, '-f', 'lavfi', '-i', 'color=c=black:s=2560x720',
+          '-filter_complex', '[0:v]crop=2687:1846:0:0,scale=-2:720[p];[1:v][p]overlay=200:0:shortest=1[out]',
+          '-map', '[out]', '-frames:v', '1', scene]);
+        const raw = execFileSync(ff, ['-v', 'error', '-i', scene, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1e8 });
+        const enc = spawn(ff, ['-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '1280x720',
+          '-r', '30', '-i', '-', '-pix_fmt', 'yuv420p', talk]);
+        const rowBytes = 1280 * 3;
+        for (let n = 0; n < 180; n++) {
+          const ox = Math.round((50 * n) / 30);
+          const frame = Buffer.alloc(1280 * 720 * 3);
+          for (let y = 0; y < 720; y++) raw.copy(frame, y * rowBytes, (y * 2560 + ox) * 3, (y * 2560 + ox) * 3 + rowBytes);
+          if (!enc.stdin.write(frame)) await new Promise((r) => enc.stdin.once('drain', r));
+        }
+        enc.stdin.end();
+        await new Promise((r) => enc.on('close', r));
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(talk);
+      const p = {
+        id: 'orig118', name: 'Reframe smoke', ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: talk, name: 'talk.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 6, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(500);
+      await shot('rf-1-before.png');
+      await q(`document.querySelector('button[aria-label="Make vertical copy"]').click()`);
+      result.switched = await until(`window.__fve.exportData().project.ratio === '9:16'`, 180000);
+      result.jobNote = await q(`document.querySelector('.render-job')?.innerText || null`);
+      const copy = await q(`window.__fve.exportData().project`);
+      result.name = copy.name;
+      result.newId = copy.id !== 'orig118';
+      result.size = [copy.width, copy.height];
+      const clip = copy.videoClips[0];
+      result.scale = clip.transform && clip.transform.scale;
+      const keys = (clip.keyframes && clip.keyframes.x) || [];
+      result.keyCount = keys.length;
+      result.firstKey = keys.length ? keys[0].v : null;
+      result.lastKey = keys.length ? keys[keys.length - 1].v : null;
+      await wait(600);
+      await shot('rf-2-after.png');
+      // Export the copy through the real UI flow and re-detect the face in the result.
+      const out = path.join(dir, 'ui-export.mp4');
+      fs.rmSync(out, { force: true });
+      await q('window.__fve.exportNow()');
+      for (let t = 0; t < 400000; t += 1000) { if (await q(`!!document.querySelector('.modal-icon.ok, .modal-icon.error')`)) break; await wait(1000); }
+      result.exportTitle = await q(`document.querySelector('#export-title')?.textContent || null`);
+      const info = await require('./ffmpeg.cjs').probe(out);
+      result.export = [info.width, info.height, Math.round(info.duration * 10) / 10];
+      const reframe = require('./reframe.cjs');
+      const again = await reframe.analyze({ path: out, width: info.width, height: info.height, duration: info.duration, fps: 30 },
+        { dir: path.join(dir, 'reframe-test'), cacheDir: path.join(dir, 'reframe-verify'), ffmpegPath: ff, toSdr: require('./ffmpeg.cjs').toSdr, from: 0, to: 6 });
+      const xs = again.points.filter((pt) => pt.x !== null).map((pt) => pt.x).sort((a, b) => a - b);
+      result.exportFaceDetected = again.detected;
+      result.exportFaceCx = xs.length ? Math.round(xs[Math.floor(xs.length / 2)] * 1000) / 1000 : null;
+      await shot('rf-3-exported.png');
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'beats') {
+    // Beat cuts (v1.1.9): a 12 s clip whose soundtrack is a 120 BPM click track
+    // (grid 0.25 + 0.5k). Clicking the timeline's Detect beats button must put the
+    // grid on the project (BPM within ±1, every marker within one frame of a true
+    // beat, diamonds in the ruler); Split at beats with the playhead inside the clip
+    // must cut it into one piece per beat interval, as one undo step.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const clickWav = path.join(mediaDir, 'clicks.wav');
+      const track = path.join(mediaDir, 'track.mp4');
+      if (!fs.existsSync(track)) {
+        const SR = 16000;
+        const samples = new Float32Array(SR * 12);
+        const burst = (at, freq, amp, len = 0.03) => {
+          const start = Math.floor(at * SR);
+          const count = Math.floor(len * SR);
+          for (let i = 0; i < count; i++) {
+            const t = i / SR;
+            samples[start + i] += amp * Math.sin(2 * Math.PI * freq * t) * Math.exp(-t / (len / 4));
+          }
+        };
+        for (let t = 0.25; t < 12; t += 0.5) { burst(t, 1600, 0.9); burst(t, 140, 0.7, 0.08); }
+        const buf = Buffer.alloc(44 + samples.length * 2);
+        buf.write('RIFF', 0, 'latin1'); buf.writeUInt32LE(36 + samples.length * 2, 4);
+        buf.write('WAVE', 8, 'latin1'); buf.write('fmt ', 12, 'latin1');
+        buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+        buf.writeUInt32LE(SR, 24); buf.writeUInt32LE(SR * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34);
+        buf.write('data', 36, 'latin1'); buf.writeUInt32LE(samples.length * 2, 40);
+        samples.forEach((v, i) => buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), 44 + i * 2));
+        fs.writeFileSync(clickWav, buf);
+        execFileSync(ff, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=12',
+          '-i', clickWav, '-shortest', '-pix_fmt', 'yuv420p', '-c:a', 'aac', track]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(track);
+      const p = {
+        id: 'beats119', name: 'Beats smoke', ratio: '16:9', resolution: 720, width: 1280, height: 720, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: track, name: 'track.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 12, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(500);
+      await q(`document.querySelector('button[aria-label^="Detect beats"]').click()`);
+      result.detected = await until(`!!(window.__fve.exportData().project.beats && window.__fve.exportData().project.beats.times.length)`, 90000);
+      result.jobNote = await q(`document.querySelector('.render-job')?.innerText || null`);
+      const proj = await q(`window.__fve.exportData().project`);
+      const grid = [];
+      for (let t = 0.25; t < 12; t += 0.5) grid.push(t);
+      if (proj.beats) {
+        result.bpm = proj.beats.bpm;
+        result.beatCount = proj.beats.times.length;
+        result.worstDevMs = Math.round(Math.max(...grid.map((g) => Math.min(...proj.beats.times.map((t) => Math.abs(t - g))))) * 1000);
+        result.gridHits = grid.filter((g) => proj.beats.times.some((t) => Math.abs(t - g) <= 1 / 30)).length;
+        result.gridTotal = grid.length;
+      }
+      result.ticks = await q(`document.querySelectorAll('.beat-tick').length`);
+      result.lines = await q(`document.querySelectorAll('.beat-line').length`);
+      await shot('bt-1-detected.png');
+      // Split at beats from inside the clip.
+      await q(`window.__fve.seek(6)`);
+      await wait(300);
+      result.splitEnabled = await q(`!document.querySelector('button[aria-label^="Split at beats"]').disabled`);
+      await q(`document.querySelector('button[aria-label^="Split at beats"]').click()`);
+      await wait(400);
+      const after = await q(`window.__fve.exportData().project`);
+      result.pieces = after.videoClips.length;
+      result.durationAfter = Math.round((await q(`window.__fve.duration()`)) * 1000) / 1000;
+      await shot('bt-2-split.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.piecesAfterUndo = (await q(`window.__fve.exportData().project`)).videoClips.length;
+      // Clear the grid from the toolbar.
+      await q(`document.querySelector('button[aria-label="Clear beat markers"]').click()`);
+      await wait(300);
+      result.beatsAfterClear = await q(`window.__fve.exportData().project.beats`);
+      result.ticksAfterClear = await q(`document.querySelectorAll('.beat-tick').length`);
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'chapters') {
+    // SRT export + auto chapters (v1.1.11): the Captions tab must show the
+    // Export .srt card with live counts; the Transcript card must offer the
+    // chapters found at the transcript's pauses, and Add chapter markers
+    // must land them on the project as markers (one undo step). The .srt
+    // bytes themselves are covered by scripts/test-chapters.mjs (the save
+    // dialog is native and cannot be driven headlessly).
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'clip.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=90',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=90', '-shortest', '-pix_fmt', 'yuv420p', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const capStyle = {
+        font: 'poppins', size: 54, bold: true, color: '#ffffff', y: 0.8, caption: true, template: 'cap-classic',
+        stroke: { width: 5, color: '#000000' }, highlight: { mode: 'none' },
+        animIn: { id: 'none', dur: 0 }, animOut: { id: 'none', dur: 0 }, animLoop: { id: 'none', speed: 1 },
+      };
+      const cap = (id, start, duration, text) => ({ ...capStyle, id, start, duration, text });
+      const p = {
+        name: 'Chapters smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'clip.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 90, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [],
+        textClips: [
+          cap('c1', 0, 5, 'welcome everyone to the show today'),
+          cap('c2', 5.5, 6.5, 'we start with the basics of editing'),
+          cap('c3', 12.5, 12.5, 'and keep going with more detail here'),
+          cap('c4', 30, 8, 'now the advanced part begins now'),
+          cap('c5', 39, 5, 'a quick aside before we continue'),
+          cap('c6', 75, 5, 'one last thing to remember always'),
+        ],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      await q(`window.__fve.tab('captions')`);
+      await wait(600);
+      result.exportCardShown = await until(`[...document.querySelectorAll('.card b')].some((b) => b.textContent.includes('Export subtitles'))`, 10000);
+      result.exportOptions = await q(`[...document.querySelectorAll('select[aria-label="Caption set to export"] option')].map((o) => o.textContent)`);
+      result.exportBtnEnabled = await q(`![...document.querySelectorAll('button')].find((b) => b.textContent.includes('Export .srt'))?.disabled`);
+      // Chapters block lives in the Transcript card (same tab, above).
+      result.chaptersShown = await until(`[...document.querySelectorAll('button')].some((b) => b.textContent.includes('Add chapter markers'))`, 10000);
+      result.chapterBtnLabel = await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Add chapter markers'))?.textContent.trim()`);
+      await shot('ch-1-cards.png');
+      await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Add chapter markers')).click()`);
+      await wait(500);
+      const after = await q(`window.__fve.exportData().project`);
+      result.markers = (after.markers || []).map((m) => [m.time, m.label]);
+      await shot('ch-2-markers.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.markersAfterUndo = (await q(`window.__fve.exportData().project`)).markers.length;
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
+  if (process.env.FVE_SMOKE_MODE === 'translate') {
+    // Caption translation (v1.1.10): the Captions tab must show the Translate
+    // card with live source counts; dispatching addTranslatedCaptions the way
+    // the card does (after a provider reply) must add a NEW text layer whose
+    // clips keep the source timings and styles exactly, originals untouched,
+    // one undo step. The provider call itself is covered by
+    // scripts/test-translate.cjs (no key/network in the sandbox profile).
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'clip.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=10',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=10', '-shortest', '-pix_fmt', 'yuv420p', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const capStyle = {
+        font: 'poppins', size: 54, bold: true, color: '#ffffff', y: 0.8, caption: true, template: 'cap-karaoke',
+        stroke: { width: 5, color: '#000000' }, highlight: { mode: 'karaoke', color: '#825cfb' },
+        animIn: { id: 'fade', dur: 0.25 }, animOut: { id: 'fade', dur: 0.25 }, animLoop: { id: 'none', speed: 1 },
+      };
+      const p = {
+        name: 'Translate smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'clip.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 10, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [],
+        textClips: [
+          { ...capStyle, id: 'c1', text: 'Hello and welcome', start: 0.5, duration: 2, words: [{ text: 'Hello', start: 0, end: 0.4 }] },
+          { ...capStyle, id: 'c2', text: 'This is my channel', start: 3, duration: 2 },
+          { ...capStyle, id: 'c3', text: 'Let us begin', start: 5.5, duration: 1.5 },
+        ],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      await q(`window.__fve.tab('captions')`);
+      await wait(600);
+      // The card: source select counts + translate button state.
+      result.cardShown = await until(`[...document.querySelectorAll('.card b')].some((b) => b.textContent.includes('Translate captions'))`, 10000);
+      result.sourceOptions = await q(`[...document.querySelectorAll('select[aria-label="Captions to translate"] option')].map((o) => o.textContent)`);
+      result.langOptions = await q(`document.querySelectorAll('select[aria-label="Target language"] option').length`);
+      result.translateBtnEnabled = await q(`![...document.querySelectorAll('button')].find((b) => b.textContent.includes('Translate 3 captions'))?.disabled`);
+      await shot('tr-1-card.png');
+      // Dispatch exactly what the card dispatches after a provider reply:
+      // segments with the helpers' style copy (identity/timing/words stripped).
+      await q(`(() => {
+        const proj = window.__fve.exportData().project;
+        const srcs = proj.textClips.filter((c) => c.caption && c.source !== 'translation').sort((a, b) => a.start - b.start);
+        const strip = (c) => { const s = { ...c }; for (const k of ['id','text','start','duration','words','source','lang','caption','layer']) delete s[k]; return s; };
+        const layer = Math.max(0, ...proj.textClips.map((c) => (c.layer ?? 0) + 1));
+        window.__fve.dispatch({ type: 'addTranslatedCaptions', lang: 'fr', layer, segments: srcs.map((c, i) => ({
+          id: 'tr' + i, text: ['Bonjour et bienvenue', 'Voici ma chaîne', 'Commençons'][i], start: c.start, duration: c.duration, style: strip(c),
+        })) });
+        return true;
+      })()`);
+      await wait(500);
+      const after = await q(`window.__fve.exportData().project`);
+      const tr = after.textClips.filter((c) => c.source === 'translation');
+      result.translatedCount = tr.length;
+      result.translatedLang = tr[0]?.lang;
+      result.translatedLayer = tr[0]?.layer;
+      result.timingsKept = tr.every((c, i) => Math.abs(c.start - [0.5, 3, 5.5][i]) < 1e-9 && Math.abs(c.duration - [2, 2, 1.5][i]) < 1e-9);
+      result.styleKept = tr[0]?.font === 'poppins' && tr[0]?.highlight?.mode === 'karaoke';
+      result.wordsDropped = tr.every((c) => !('words' in c));
+      result.originalsIntact = after.textClips.filter((c) => c.source !== 'translation').length === 3;
+      result.panelRows = await q(`document.querySelectorAll('.sub-panel .sub-row').length`);
+      await shot('tr-2-layer.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.afterUndo = (await q(`window.__fve.exportData().project`)).textClips.length;
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'subtitles') {
     // Subtitles panel + user caption templates + export progress (2026-11-05):
     // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap

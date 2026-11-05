@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Anvil, ArrowLeftRight, Blend, Captions as CaptionsIcon, Contrast, Film, FolderOpen, ImagePlus, Mic, Music, Plus, Scissors, SlidersHorizontal,
+  Anvil, ArrowLeftRight, Blend, Captions as CaptionsIcon, Contrast, Download, Film, Flag, FolderOpen, ImagePlus, Mic, Music, Plus, Scissors, SlidersHorizontal,
   Loader2, Sparkles, Square, Trash2, Type, Upload, WandSparkles, X,
   Layers, ChevronDown, ChevronRight, ChevronUp, Sparkles as SparklesIcon, Award, FolderPlus, MonitorUp, History, UserRound, Users, LayoutTemplate,
+  Languages,
 } from 'lucide-react';
 import AssetsTab from './AssetsPanel.jsx';
 import PackMusic from './PackMusic.jsx';
@@ -19,10 +20,12 @@ import {
 } from '../text/userTemplates.js';
 import { BUNDLED_LUTS } from '../fx/lut.js';
 import { loadLutLibrary, saveLutLibrary, addLutEntry, removeLutEntry } from '../fx/lutlib.js';
-import { formatTime, getPlaybackQuality, levelCopyState, previewPath, projectDuration, proxyPrefOn, toFileUrl, uid } from '../store.js';
-import { flatWords, rangesSeconds, selectionCutRanges, sentenceRange, silenceCutRanges, transcriptSentences } from '../transcript.js';
+import { formatTime, getPlaybackQuality, layerCount, levelCopyState, previewPath, projectDuration, proxyPrefOn, toFileUrl, uid } from '../store.js';
+import { TRANSLATE_LANGS, langName, translationSources, translationStyle } from '../translate.js';
+import { flatWords, rangesSeconds, retakeCutRanges, retakeGroups, selectionCutRanges, sentenceRange, silenceCutRanges, transcriptSentences } from '../transcript.js';
 import { COLLECTIONS, PACKS, COLLECTION_ITEMS, loadFavorites, saveFavorites, toggleFavorite } from '../fx/collections.js';
-import { parseSRT, regroupSegments } from '../subtitles.js';
+import { parseSRT, regroupSegments, toSRT } from '../subtitles.js';
+import { autoChapters, chaptersText } from '../chapters.js';
 import { DEFAULT_ADJUST, EFFECTS, EFFECT_GROUPS, FILTERS, TRANSITIONS } from '../effects.js';
 import { dragProps } from '../dnd.js';
 import Slider from './Slider.jsx';
@@ -586,6 +589,12 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
     setSil(null);
   };
   const shown = sentences.slice(0, TX_RENDER_CAP);
+  // Retake assistant (v1.1.7): repeated lines are grouped live from the same
+  // sentences; each group suggests its last complete take as the keeper.
+  const takeGroups = retakeGroups(sentences);
+  const takeOf = new Map(); // sentenceIndex -> { group, takeNo, isKeep }
+  takeGroups.forEach((g, gi2) => g.members.forEach((mi, ti) => takeOf.set(mi, { group: gi2, takeNo: ti + 1, takes: g.members.length, isKeep: mi === g.keep })));
+  const keepTake = (g) => dispatch({ type: 'cutRanges', ranges: retakeCutRanges(sentences, g), rippleText: true });
   let gi = -1;
   return (
     <div className="card tx-card">
@@ -595,8 +604,8 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
       </div>
       <p className="muted small">Click a word to select it, Shift-click to extend the selection, then cut — the video closes up and later captions shift with it. One undo brings it all back.</p>
       <div className="tx-body" dir="auto">
-        {shown.map((s) => (
-          <p key={s.clipId} className="tx-sentence">
+        {shown.map((s, si) => (
+          <p key={s.clipId} className={`tx-sentence ${takeOf.has(si) ? 'tx-retake' : ''} ${takeOf.get(si)?.isKeep ? 'tx-retake-keep' : ''}`}>
             <button type="button" className="tx-time" title="Go to this sentence"
               onClick={() => { onSeek?.(s.start); onSelect?.({ track: 'text', id: s.clipId }); }}>
               {formatTime(s.start)}
@@ -615,6 +624,9 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
               onClick={() => dispatch({ type: 'cutRanges', ranges: [sentenceRange(s)], rippleText: true })}>
               <Scissors size={12} />
             </button>
+            {takeOf.has(si) && (
+              <span className="tx-take-badge">Take {takeOf.get(si).takeNo} of {takeOf.get(si).takes}{takeOf.get(si).isKeep ? ' · suggested' : ''}</span>
+            )}
           </p>
         ))}
       </div>
@@ -625,6 +637,21 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
         </button>
         {sel && <button className="btn btn-sm btn-ghost" onClick={() => { setSel(null); anchor.current = null; }}>Clear selection</button>}
       </div>
+      <ChaptersBlock project={project} dispatch={dispatch} sentences={sentences} />
+      {takeGroups.length > 0 && (
+        <div className="tx-retakes">
+          <b className="small">Retakes</b>
+          <p className="muted small">The same line said more than once, back to back. Keeping the suggested take cuts the other attempts — one undo brings them all back.</p>
+          {takeGroups.map((g, n) => (
+            <div key={n} className="tx-retake-row">
+              <span>Sentences {g.members[0] + 1}–{g.members[g.members.length - 1] + 1} · keep sentence {g.keep + 1}</span>
+              <button className="btn btn-sm" onClick={() => keepTake(g)}>
+                <Scissors size={13} /> Keep suggested take · saves {rangesSeconds(retakeCutRanges(sentences, g)).toFixed(1)} s
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="tx-silences">
         <b className="small">Silences</b>
         <label className="field">
@@ -667,6 +694,165 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// Auto chapters (v1.1.11): chapters derived from the transcript's pauses —
+// add them as timeline markers, or copy the YouTube description format.
+function ChaptersBlock({ project, dispatch, sentences }) {
+  const [note, setNote] = useState('');
+  const chapters = autoChapters(sentences);
+  if (chapters.length < 2) return null;
+  const fresh = chapters.filter((c) => !(project.markers || []).some((m) => Math.abs(m.time - c.time) < 0.5));
+  const add = () => {
+    dispatch({ type: 'addMarkers', markers: chapters.map((c) => ({ id: uid(), time: c.time, label: c.title })) });
+    setNote(fresh.length === chapters.length
+      ? `Added ${chapters.length} chapter markers to the ruler.`
+      : `Added ${fresh.length} new chapter markers (${chapters.length - fresh.length} already marked).`);
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(chaptersText(chapters));
+      setNote('Copied — paste it into your video description and YouTube turns it into chapters.');
+    } catch {
+      setNote('Clipboard was not available — the chapters list could not be copied.');
+    }
+  };
+  return (
+    <div className="tx-chapters">
+      <b className="small">Chapters</b>
+      <p className="muted small">{chapters.length} chapters found at the pauses in the talk (a new chapter after a 3 s pause, at most every 20 s), each titled from its first words.</p>
+      <div className="tx-actions">
+        <button className="btn btn-sm" disabled={!fresh.length} onClick={add}>
+          <Flag size={14} /> Add chapter markers{fresh.length ? ` (${fresh.length})` : ''}
+        </button>
+        <button className="btn btn-sm btn-ghost" onClick={copy}>Copy chapters list</button>
+      </div>
+      {note && <p className="muted small">{note}</p>}
+    </div>
+  );
+}
+
+// SRT export (v1.1.11): write any caption set back out as a standalone .srt.
+function SrtExportCard({ project }) {
+  const sources = translationSources(project);
+  const translations = project.textClips.filter((c) => c.source === 'translation').slice().sort((a, b) => a.start - b.start);
+  const sets = [
+    { id: 'auto', label: `Auto captions (${sources.auto.length})`, clips: sources.auto },
+    { id: 'srt', label: `Imported subtitles (${sources.srt.length})`, clips: sources.srt },
+    { id: 'translation', label: `Translated captions (${translations.length})`, clips: translations },
+    { id: 'all', label: `Everything (${sources.all.length + translations.length})`, clips: [...sources.all, ...translations] },
+  ];
+  const [setId, setSetId] = useState('auto');
+  const [note, setNote] = useState('');
+  const set = sets.find((s) => s.id === setId) || sets[0];
+  const save = async () => {
+    if (!set.clips.length) return;
+    const base = (project.name || 'captions').replace(/[\\/:*?"<>|]+/g, '').trim() || 'captions';
+    const res = await window.api.saveTextFile({
+      title: 'Export subtitles',
+      defaultName: `${base}${setId === 'auto' ? '' : `-${setId}`}.srt`,
+      content: toSRT(set.clips),
+      filters: [{ name: 'SubRip subtitles', extensions: ['srt'] }],
+    });
+    if (res?.ok) setNote(`Saved ${set.clips.length} cues to ${res.path}.`);
+    else if (res?.error) setNote(res.error);
+    else setNote('');
+  };
+  return (
+    <div className="card">
+      <b>Export subtitles (.srt)</b>
+      <p className="muted">Write a caption set out as a standard SubRip file — for YouTube, players, or another editor. Timings and text exactly as they sit on the timeline.</p>
+      <div className="preset-save">
+        <select value={setId} onChange={(e) => setSetId(e.target.value)} aria-label="Caption set to export">
+          {sets.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
+        <button className="btn btn-sm" disabled={!set.clips.length} onClick={save}><Download size={14} /> Export .srt</button>
+      </div>
+      {note && <p className="muted small">{note}</p>}
+    </div>
+  );
+}
+
+// Caption translation (v1.1.10): send the caption lines to the AI provider
+// configured in Settings; the translations come back as a NEW text layer
+// with the original timings and styles, originals untouched.
+function TranslateCard({ project, dispatch }) {
+  const sources = translationSources(project);
+  const [src, setSrc] = useState('auto');
+  const [lang, setLang] = useState('fr');
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+  const clips = sources[src] || [];
+  const existing = project.textClips.filter((c) => c.source === 'translation');
+
+  useEffect(() => {
+    if (!busy) return undefined;
+    const off = window.api.onTranslateProgress((p) => setProgress(p));
+    return off;
+  }, [busy]);
+
+  const run = async () => {
+    if (!clips.length || busy) return;
+    setBusy(true); setError(''); setNote(''); setProgress({ done: 0, total: clips.length });
+    try {
+      const res = await window.api.translateCaptions({ texts: clips.map((c) => c.text || ''), targetName: langName(lang) });
+      if (res.canceled) { setNote('Translation cancelled — nothing was added.'); return; }
+      if (res.error) { setError(res.error); return; }
+      if (!res.texts || res.texts.length !== clips.length) { setError('The AI provider returned an unexpected reply. Nothing was added.'); return; }
+      const layer = layerCount(project, 'text');
+      dispatch({
+        type: 'addTranslatedCaptions',
+        lang,
+        layer,
+        segments: clips.map((c, i) => ({
+          id: uid(),
+          text: res.texts[i],
+          start: c.start,
+          duration: c.duration,
+          style: translationStyle(c),
+        })),
+      });
+      setNote(`Added ${clips.length} ${langName(lang)} caption${clips.length > 1 ? 's' : ''} on a new text layer (Text ${layer + 1}). The originals are unchanged.`);
+    } catch (e) {
+      setError(e.message || 'Translation failed.');
+    } finally {
+      setBusy(false); setProgress(null);
+    }
+  };
+
+  return (
+    <div className="card">
+      <b><Languages size={14} /> Translate captions</b>
+      <p className="muted">Translate your captions with the AI provider from Settings. The translation lands on a new text layer with the same timings — the original captions stay as they are.</p>
+      <div className="preset-save">
+        <select value={src} onChange={(e) => setSrc(e.target.value)} aria-label="Captions to translate" disabled={busy}>
+          <option value="auto">Auto captions ({sources.auto.length})</option>
+          <option value="srt">Imported subtitles ({sources.srt.length})</option>
+          <option value="all">All captions ({sources.all.length})</option>
+        </select>
+        <select value={lang} onChange={(e) => setLang(e.target.value)} aria-label="Target language" disabled={busy}>
+          {TRANSLATE_LANGS.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
+        </select>
+      </div>
+      {busy ? (
+        <>
+          <div className="progress"><div style={{ width: `${progress && progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} /></div>
+          <p className="muted small">Translating… {progress ? `${progress.done} of ${progress.total} lines` : ''}</p>
+          <button className="btn btn-ghost btn-sm" onClick={() => window.api.translateCancel()}>Cancel</button>
+        </>
+      ) : (
+        <button className="btn btn-sm" disabled={!clips.length} onClick={run}>
+          <Languages size={14} /> Translate {clips.length ? `${clips.length} caption${clips.length > 1 ? 's' : ''} ` : ''}to {langName(lang)}
+        </button>
+      )}
+      {!clips.length && !busy && <p className="muted small">Generate or import captions first — there is nothing to translate yet.</p>}
+      {existing.length > 0 && <p className="muted small">{existing.length} translated caption{existing.length > 1 ? 's' : ''} already on the timeline.</p>}
+      {error && <p className="muted small" role="alert">{error}</p>}
+      {note && <p className="muted small">{note}</p>}
     </div>
   );
 }
@@ -955,6 +1141,8 @@ function CaptionsTab({ onAddText, captions, project, dispatch, onSeek, onSelect 
           </>
         )}
       </div>
+      <TranslateCard project={project} dispatch={dispatch} />
+      <SrtExportCard project={project} />
       {subtitleClips.length > 0 && (
         <div className="card sub-panel">
           <div className="sub-panel-head">
