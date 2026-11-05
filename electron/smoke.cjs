@@ -1278,6 +1278,76 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'chapters') {
+    // SRT export + auto chapters (v1.1.11): the Captions tab must show the
+    // Export .srt card with live counts; the Transcript card must offer the
+    // chapters found at the transcript's pauses, and Add chapter markers
+    // must land them on the project as markers (one undo step). The .srt
+    // bytes themselves are covered by scripts/test-chapters.mjs (the save
+    // dialog is native and cannot be driven headlessly).
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'clip.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=90',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=90', '-shortest', '-pix_fmt', 'yuv420p', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const capStyle = {
+        font: 'poppins', size: 54, bold: true, color: '#ffffff', y: 0.8, caption: true, template: 'cap-classic',
+        stroke: { width: 5, color: '#000000' }, highlight: { mode: 'none' },
+        animIn: { id: 'none', dur: 0 }, animOut: { id: 'none', dur: 0 }, animLoop: { id: 'none', speed: 1 },
+      };
+      const cap = (id, start, duration, text) => ({ ...capStyle, id, start, duration, text });
+      const p = {
+        name: 'Chapters smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'clip.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 90, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [],
+        textClips: [
+          cap('c1', 0, 5, 'welcome everyone to the show today'),
+          cap('c2', 5.5, 6.5, 'we start with the basics of editing'),
+          cap('c3', 12.5, 12.5, 'and keep going with more detail here'),
+          cap('c4', 30, 8, 'now the advanced part begins now'),
+          cap('c5', 39, 5, 'a quick aside before we continue'),
+          cap('c6', 75, 5, 'one last thing to remember always'),
+        ],
+      };
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      await q(`window.__fve.tab('captions')`);
+      await wait(600);
+      result.exportCardShown = await until(`[...document.querySelectorAll('.card b')].some((b) => b.textContent.includes('Export subtitles'))`, 10000);
+      result.exportOptions = await q(`[...document.querySelectorAll('select[aria-label="Caption set to export"] option')].map((o) => o.textContent)`);
+      result.exportBtnEnabled = await q(`![...document.querySelectorAll('button')].find((b) => b.textContent.includes('Export .srt'))?.disabled`);
+      // Chapters block lives in the Transcript card (same tab, above).
+      result.chaptersShown = await until(`[...document.querySelectorAll('button')].some((b) => b.textContent.includes('Add chapter markers'))`, 10000);
+      result.chapterBtnLabel = await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Add chapter markers'))?.textContent.trim()`);
+      await shot('ch-1-cards.png');
+      await q(`[...document.querySelectorAll('button')].find((b) => b.textContent.includes('Add chapter markers')).click()`);
+      await wait(500);
+      const after = await q(`window.__fve.exportData().project`);
+      result.markers = (after.markers || []).map((m) => [m.time, m.label]);
+      await shot('ch-2-markers.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.markersAfterUndo = (await q(`window.__fve.exportData().project`)).markers.length;
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'translate') {
     // Caption translation (v1.1.10): the Captions tab must show the Translate
     // card with live source counts; dispatching addTranslatedCaptions the way

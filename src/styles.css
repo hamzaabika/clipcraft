@@ -2439,6 +2439,7 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .tx-cut-sentence:hover { color: var(--danger, #f87171); }
 .tx-actions { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
 .tx-silences { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.tx-chapters { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .tx-sil-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
 .tx-sil-row { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; padding: 3px 6px; background: var(--surface-3); border-radius: var(--r-sm); }
 /* Retake assistant (v1.1.7): repeated-line groups in the transcript. */

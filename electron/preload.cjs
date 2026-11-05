@@ -230,6 +230,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('beats:progress', handler);
     return () => ipcRenderer.removeListener('beats:progress', handler);
   },
+  // Save renderer-made text (subtitle export): ({ title, defaultName, content, filters }) -> { ok, path } | { canceled } | { error }.
+  saveTextFile: (payload) => ipcRenderer.invoke('file:saveText', payload),
   // Caption translation: ({ texts, targetName }) -> { ok, texts, provider } | { canceled } | { error }; progress: { done, total }.
   translateCaptions: (payload) => ipcRenderer.invoke('translate:captions', payload),
   translateCancel: () => ipcRenderer.invoke('translate:cancel'),

@@ -608,7 +608,21 @@ function reduceProjectInner(p, a) {
       return cutRanges(p, a.ranges, { rippleText: !!a.rippleText });
     case 'addMarker':
       return { ...p, markers: [...p.markers, { id: a.id, time: Math.max(0, a.time), label: a.label || '' }].sort((x, y) => x.time - y.time) };
-
+    case 'addMarkers': {
+      // Bulk add (auto chapters, v1.1.11): the whole batch is one undo step.
+      // A marker within half a second of an existing one (or of another in
+      // the batch) is skipped — chapters never stack duplicates on re-runs.
+      const kept = [];
+      const taken = (p.markers || []).map((m) => m.time);
+      for (const m of a.markers || []) {
+        const t = Math.max(0, Number(m.time) || 0);
+        if (taken.some((x) => Math.abs(x - t) < 0.5)) continue;
+        taken.push(t);
+        kept.push({ id: m.id, time: t, label: m.label || '' });
+      }
+      if (!kept.length) return p;
+      return { ...p, markers: [...p.markers, ...kept].sort((x, y) => x.time - y.time) };
+    }
     case 'removeMarker':
       return { ...p, markers: p.markers.filter((m) => m.id !== a.id) };
     case 'setBeats':

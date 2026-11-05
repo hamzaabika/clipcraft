@@ -1235,6 +1235,24 @@ ipcMain.handle('beats:analyze', async (_e, project) => {
 });
 ipcMain.handle('beats:cancel', () => { if (beatsJob) beatsJob.canceled = true; });
 
+// Save a text file the renderer produced (subtitle export, v1.1.11): the
+// dialog and the write live here; the renderer supplies only text + a name.
+ipcMain.handle('file:saveText', async (_e, { title, defaultName, content, filters } = {}) => {
+  try {
+    const name = String(defaultName || 'file.txt').replace(/[\\/:*?"<>|]+/g, '').trim() || 'file.txt';
+    const res = await dialog.showSaveDialog(win, {
+      title: title || 'Save file',
+      defaultPath: name,
+      filters: filters && filters.length ? filters : [{ name: 'Text', extensions: ['txt'] }],
+    });
+    if (res.canceled || !res.filePath) return { canceled: true };
+    fs.writeFileSync(res.filePath, String(content ?? ''), 'utf8');
+    return { ok: true, path: res.filePath };
+  } catch (e) {
+    return { error: `Could not save the file: ${e.message}` };
+  }
+});
+
 // ---- Caption translation (v1.1.10): the user's AI provider translates the
 // caption lines; timings never leave the renderer. One job at a time. ----
 const translate = require('./translate.cjs');
