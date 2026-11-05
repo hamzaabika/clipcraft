@@ -1008,6 +1008,81 @@ module.exports = async function smoke(win, app, dir) {
     fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
     return app.quit();
   }
+  if (process.env.FVE_SMOKE_MODE === 'retakes') {
+    // Retake assistant (v1.1.7): captions with two repeated-line groups are
+    // injected through setCaptions; the Transcript panel must badge the
+    // takes, suggest the last complete one, and its Keep button must cut
+    // exactly the other attempts (measured durations), undo restoring all.
+    const q = run;
+    const until = async (js, ms = 30000) => { for (let t = 0; t < ms; t += 250) { if (await q(js)) return true; await wait(250); } return false; };
+    const { execFileSync } = require('child_process');
+    const ff = require('./ffmpeg.cjs').ffmpegPath;
+    try {
+      const mediaDir = path.join(dir, 'media');
+      fs.mkdirSync(mediaDir, { recursive: true });
+      const src = path.join(mediaDir, 'talk20.mp4');
+      if (!fs.existsSync(src)) {
+        execFileSync(ff, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=360x640:rate=30:duration=20',
+          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=20:sample_rate=44100', '-shortest', '-pix_fmt', 'yuv420p', '-c:a', 'aac', src]);
+      }
+      await wait(800);
+      const probed = await require('./ffmpeg.cjs').probe(src);
+      const p = {
+        name: 'Retakes smoke', ratio: '9:16', resolution: 720, width: 360, height: 640, fps: 30, background: '#000000',
+        media: [{ id: 'm0', path: src, name: 'talk20.mp4', kind: 'video', ...probed }],
+        videoClips: [{ id: 'v1', mediaId: 'm0', in: 0, out: 20, speed: 1, volume: 1, muted: false, filter: 'none', adjust: {}, effects: [], transition: null }],
+        overlayClips: [], audioClips: [], stickerClips: [], effectClips: [], textClips: [],
+      };
+      const dur = () => q(`window.__fve.exportData().project.videoClips.reduce((n, c) => n + (c.out - c.in) / (c.speed || 1), 0)`);
+      await q(`(() => { const b = document.querySelector('button[aria-label="New 16:9 project"]'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      result.editorReady = await until(`!!document.querySelector('.play-btn')`, 15000);
+      await q(`(() => { const b = document.querySelector('button[aria-label="Skip tour"]') || [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Start creating'); if (b) b.click(); return !!b; })()`).catch(() => {});
+      await wait(600);
+      await q(`window.__fve.load(${JSON.stringify(p)})`);
+      await wait(400);
+      const seg = (id, start, end, text) => {
+        const parts = text.split(' ');
+        return { id, start, end, text, words: parts.map((t, i) => ({ text: t, start: start + ((end - start) * i) / parts.length, end: start + ((end - start) * (i + 1)) / parts.length })) };
+      };
+      const segments = [
+        seg('rk1', 1, 3, 'welcome back to'),
+        seg('rk2', 4, 7, 'welcome back to the show everyone'),
+        seg('rk3', 9, 12, 'today we test three laptops'),
+        seg('rk4', 13, 16, 'today we test three laptops'),
+        seg('rk5', 17, 18.5, 'today we test'),
+        seg('rk6', 19, 20, 'thanks for watching'),
+      ];
+      await q(`window.__fve.dispatch({ type: 'setCaptions', style: { template: 'cap-classic' }, segments: ${JSON.stringify(segments)} })`);
+      await wait(300);
+      await q(`window.__fve.tab('captions')`);
+      result.at = 'panel';
+      result.badges = await until(`document.querySelectorAll('.tx-take-badge').length === 5`, 10000)
+        ? await q(`document.querySelectorAll('.tx-take-badge').length`) : 0;
+      result.badgeText = await q(`[...document.querySelectorAll('.tx-take-badge')].map((b) => b.textContent.trim())`);
+      result.keepButtons = await q(`[...document.querySelectorAll('.tx-retake-row button')].map((b) => b.textContent.trim())`);
+      result.before = await dur();
+      await shot('rk-1-groups.png');
+      // Keep group 2's suggested take (sentence 4): cuts rk3 (3 s) + rk5 (1.5 s).
+      await q(`document.querySelectorAll('.tx-retake-row button')[1].click()`);
+      await wait(400);
+      result.afterKeepGroup2 = await dur();
+      result.keptCaption = await q(`window.__fve.exportData().project.textClips.some((c) => c.id === 'rk4')`);
+      result.cutCaptionsGone = await q(`window.__fve.exportData().project.textClips.filter((c) => c.caption).map((c) => c.id)`);
+      await shot('rk-2-kept.png');
+      await q(`window.__fve.dispatch({ type: 'undo' })`);
+      await wait(300);
+      result.afterUndo = await dur();
+      // Keep group 1's suggested take (sentence 2): cuts rk1 (2 s).
+      await q(`document.querySelectorAll('.tx-retake-row button')[0].click()`);
+      await wait(400);
+      result.afterKeepGroup1 = await dur();
+      await shot('rk-3-kept1.png');
+    } catch (e) {
+      result.error = e.message;
+    }
+    fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(result, null, 2));
+    return app.quit();
+  }
   if (process.env.FVE_SMOKE_MODE === 'subtitles') {
     // Subtitles panel + user caption templates + export progress (2026-11-05):
     // builds its own fixture (14 s vertical clip, two SRT cues with a 5.5 s gap

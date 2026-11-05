@@ -20,7 +20,7 @@ import {
 import { BUNDLED_LUTS } from '../fx/lut.js';
 import { loadLutLibrary, saveLutLibrary, addLutEntry, removeLutEntry } from '../fx/lutlib.js';
 import { formatTime, getPlaybackQuality, levelCopyState, previewPath, projectDuration, proxyPrefOn, toFileUrl, uid } from '../store.js';
-import { flatWords, rangesSeconds, selectionCutRanges, sentenceRange, silenceCutRanges, transcriptSentences } from '../transcript.js';
+import { flatWords, rangesSeconds, retakeCutRanges, retakeGroups, selectionCutRanges, sentenceRange, silenceCutRanges, transcriptSentences } from '../transcript.js';
 import { COLLECTIONS, PACKS, COLLECTION_ITEMS, loadFavorites, saveFavorites, toggleFavorite } from '../fx/collections.js';
 import { parseSRT, regroupSegments } from '../subtitles.js';
 import { DEFAULT_ADJUST, EFFECTS, EFFECT_GROUPS, FILTERS, TRANSITIONS } from '../effects.js';
@@ -586,6 +586,12 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
     setSil(null);
   };
   const shown = sentences.slice(0, TX_RENDER_CAP);
+  // Retake assistant (v1.1.7): repeated lines are grouped live from the same
+  // sentences; each group suggests its last complete take as the keeper.
+  const takeGroups = retakeGroups(sentences);
+  const takeOf = new Map(); // sentenceIndex -> { group, takeNo, isKeep }
+  takeGroups.forEach((g, gi2) => g.members.forEach((mi, ti) => takeOf.set(mi, { group: gi2, takeNo: ti + 1, takes: g.members.length, isKeep: mi === g.keep })));
+  const keepTake = (g) => dispatch({ type: 'cutRanges', ranges: retakeCutRanges(sentences, g), rippleText: true });
   let gi = -1;
   return (
     <div className="card tx-card">
@@ -595,8 +601,8 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
       </div>
       <p className="muted small">Click a word to select it, Shift-click to extend the selection, then cut — the video closes up and later captions shift with it. One undo brings it all back.</p>
       <div className="tx-body" dir="auto">
-        {shown.map((s) => (
-          <p key={s.clipId} className="tx-sentence">
+        {shown.map((s, si) => (
+          <p key={s.clipId} className={`tx-sentence ${takeOf.has(si) ? 'tx-retake' : ''} ${takeOf.get(si)?.isKeep ? 'tx-retake-keep' : ''}`}>
             <button type="button" className="tx-time" title="Go to this sentence"
               onClick={() => { onSeek?.(s.start); onSelect?.({ track: 'text', id: s.clipId }); }}>
               {formatTime(s.start)}
@@ -615,6 +621,9 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
               onClick={() => dispatch({ type: 'cutRanges', ranges: [sentenceRange(s)], rippleText: true })}>
               <Scissors size={12} />
             </button>
+            {takeOf.has(si) && (
+              <span className="tx-take-badge">Take {takeOf.get(si).takeNo} of {takeOf.get(si).takes}{takeOf.get(si).isKeep ? ' · suggested' : ''}</span>
+            )}
           </p>
         ))}
       </div>
@@ -625,6 +634,20 @@ function TranscriptCard({ project, dispatch, onSeek, onSelect }) {
         </button>
         {sel && <button className="btn btn-sm btn-ghost" onClick={() => { setSel(null); anchor.current = null; }}>Clear selection</button>}
       </div>
+      {takeGroups.length > 0 && (
+        <div className="tx-retakes">
+          <b className="small">Retakes</b>
+          <p className="muted small">The same line said more than once, back to back. Keeping the suggested take cuts the other attempts — one undo brings them all back.</p>
+          {takeGroups.map((g, n) => (
+            <div key={n} className="tx-retake-row">
+              <span>Sentences {g.members[0] + 1}–{g.members[g.members.length - 1] + 1} · keep sentence {g.keep + 1}</span>
+              <button className="btn btn-sm" onClick={() => keepTake(g)}>
+                <Scissors size={13} /> Keep suggested take · saves {rangesSeconds(retakeCutRanges(sentences, g)).toFixed(1)} s
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="tx-silences">
         <b className="small">Silences</b>
         <label className="field">

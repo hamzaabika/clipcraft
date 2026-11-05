@@ -2436,6 +2436,13 @@ input[type='range']:not(.grade-range)::-moz-range-thumb { width: 12px; height: 1
 .tx-silences { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .tx-sil-list { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
 .tx-sil-row { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums; padding: 3px 6px; background: var(--surface-3); border-radius: var(--r-sm); }
+/* Retake assistant (v1.1.7): repeated-line groups in the transcript. */
+.tx-retake { border-left: 2px solid var(--border); padding-left: 8px; }
+.tx-retake-keep { border-left-color: var(--primary); }
+.tx-take-badge { display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; vertical-align: middle; white-space: nowrap; }
+.tx-retake-keep .tx-take-badge { color: var(--primary); border-color: var(--primary); }
+.tx-retakes { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.tx-retake-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
 /* Export encoding view: live processed-time readout next to the stage. */
 .x-enc-time { margin-left: auto; color: var(--text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
 .x-enc-pct { margin-left: 0; }
